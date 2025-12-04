@@ -75,8 +75,8 @@ class GaussianSigmoidMF(nn.Module):
         c_exp = self.c.unsqueeze(0).expand(batch, self.K, self.n_inputs)
         s_exp = s_pos.unsqueeze(0).expand(batch, self.K, self.n_inputs)
 
-        mu_gauss = torch.exp(-((x_exp - c_exp) ** 2) / (2.0 * (s_exp ** 2) + 1e-12))
-        mu_sig = torch.sigmoid((x_exp - c_exp) / (s_exp + 1e-12))
+        mu_gauss = torch.exp(-((x_exp - c_exp) ** 2) / (2.0 * (s_exp ** 2)))
+        mu_sig = torch.sigmoid((x_exp - c_exp) / (s_exp))
 
         if self.s_mode == "C":
             blend = torch.sigmoid(self.C)
