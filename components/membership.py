@@ -67,7 +67,7 @@ class GaussianSigmoidMF(nn.Module):
         else:
             raise ValueError("s_mode must be 'C' or 'alpha_beta'")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_parts: bool = False):
         batch = x.shape[0]
         s_pos = torch.nn.functional.softplus(self.s) + 1e-6
 
@@ -88,5 +88,11 @@ class GaussianSigmoidMF(nn.Module):
         blend_exp = blend.unsqueeze(0).expand(batch, self.K, self.n_inputs)
         mu_blend = blend_exp * mu_gauss + (1.0 - blend_exp) * mu_sig
         w = torch.prod(mu_blend, dim=2)
-        return torch.clamp(w, min=1e-8)
+        w = torch.clamp(w, min=1e-8)
+
+        if return_parts:
+            return w, mu_gauss, mu_sig, blend_exp, mu_blend
+
+        return w
+
 
