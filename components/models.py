@@ -41,7 +41,37 @@ def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, m
 
     return np.array(cntr, dtype=np.float32), np.array(spreads, dtype=np.float32)
 
+def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", seed=42):
+    """
+    Initialize MF centers and spreads.
 
+    Args:
+        X_train: training data, shape [n_samples, n_features]
+        K: number of rules
+        method: "fcm", "random_normal", or "random_uniform"
+        scale: typical scale for Gaussian spreads
+        s_mode: "alpha_beta" or "C"
+        seed: random seed
+    Returns:
+        centers: [K, n_features] float32
+        spreads: [K, n_features] float32
+        alpha/beta or C will be initialized later in ANFIS
+    """
+    np.random.seed(seed)
+    n_features = X_train.shape[1]
+
+    if method == "fcm":
+        centers, spreads = fcm_initialize(X_train, K)  # your FCM function
+    elif method == "random_uniform":
+        # Uniformly distributed centers in the range of X_train
+        X_min, X_max = X_train.min(axis=0), X_train.max(axis=0)
+        centers = np.random.uniform(X_min, X_max, size=(K, n_features)).astype(np.float32)
+        # Large spreads uniformly sampled to cover wide area
+        spreads = np.random.uniform(0.5*scale, 1.5*scale, size=(K, n_features)).astype(np.float32)
+    else:
+        raise ValueError(f"Unknown method: {method}")
+
+    return centers, spreads
 
 
 class ANFISSimple(nn.Module):
