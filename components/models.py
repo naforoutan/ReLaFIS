@@ -3,7 +3,6 @@ import torch.nn as nn
 import numpy as np
 import skfuzzy as fuzz 
 
-
 from .membership import GaussianSigmoidMF, SimpleGaussianMF
 
 
@@ -73,7 +72,6 @@ def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", see
 
     return centers, spreads
 
-
 class ANFISSimple(nn.Module):
     """Takagi–Sugeno ANFIS with Gaussian MFs (simple FCM init)."""
 
@@ -99,7 +97,6 @@ class ANFISSimple(nn.Module):
         y_pred = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
         return y_pred
 
-
 class ANFISAdvanced(nn.Module):
     """Takagi–Sugeno ANFIS using blended Gaussian+sigmoid MFs."""
 
@@ -124,3 +121,10 @@ class ANFISAdvanced(nn.Module):
         rule_outputs = linear + bias.unsqueeze(0)
         y = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
         return y
+
+def create_anfis_model(mf_type, centers_init, spreads_init, n_outputs=1, s_mode="alpha_beta"):
+    from .models import ANFISSimple, ANFISAdvanced
+    if mf_type == "simple":
+        return ANFISSimple(centers_init, spreads_init, n_outputs=n_outputs)
+    else:
+        return ANFISAdvanced(centers_init, spreads_init, s_mode=s_mode, n_outputs=n_outputs)
