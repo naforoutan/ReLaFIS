@@ -132,7 +132,7 @@ def evaluate_anfis_model(
         plt.show()
 
     # IRIS dataset special handling (multi-class with 4 features)
-    elif dataset_name == "iris" and task_type == "multiclass":
+    elif task_type == "multiclass":
         # Plot petal features (2,3) as in your example
         petal_idx = (2, 3)
         baseline = X_train.mean(axis=0)
