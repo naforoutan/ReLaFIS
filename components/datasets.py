@@ -37,10 +37,9 @@ def make_swiss_roll_dataset(n_samples=1000, noise=0.1):
 # ---------------------------
 
 def load_iris_dataset():
-    """Iris dataset, multiclass classification"""
     data = load_iris()
     X = data.data.astype(np.float32)
-    y = data.target
+    y = data.target.astype(np.int64)
     return X, y
 
 # ---------------------------
@@ -92,23 +91,17 @@ def load_digits_dataset(normalize=True):
 # ---------------------------
 
 def load_dataset(name, test_size=0.2, random_state=42):
-    """
-    Load a dataset by name and return train/test split.
-    
-    Returns:
-        X_train, X_test, y_train, y_test, task_type, n_outputs
-    """
     if name == "spiral":
         X, y = make_spirals()
-        task_type = "binary"
+        task_type = "classification"
         n_outputs = 1
     elif name == "circles":
         X, y = make_circles_dataset()
-        task_type = "binary"
+        task_type = "classification"
         n_outputs = 1
     elif name == "moons":
         X, y = make_moons_dataset()
-        task_type = "binary"
+        task_type = "classification"
         n_outputs = 1
     elif name == "swiss-roll":
         X, y = make_swiss_roll_dataset()
@@ -116,22 +109,21 @@ def load_dataset(name, test_size=0.2, random_state=42):
         n_outputs = 1
     elif name == "iris":
         X, y = load_iris_dataset()
-        task_type = "multiclass"
-        n_outputs = len(np.unique(y))
+        task_type = "classification"
+        n_outputs = len(np.unique(y))  # 3
     elif name == "mackey-glass":
         X, y = generate_mackey_glass()
         task_type = "regression"
         n_outputs = 1
     elif name == "digits":
         X, y = load_digits_dataset()
-        task_type = "multiclass"
-        n_outputs = len(np.unique(y))  # should be 10
+        task_type = "classification"
+        n_outputs = len(np.unique(y))  # 10
     else:
         raise ValueError(f"Unknown dataset: {name}")
 
-    # Split train/test
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, shuffle=True
+        X, y, test_size=test_size, random_state=random_state, shuffle=True, stratify=y if task_type=="classification" else None
     )
 
     return X_train, X_test, y_train, y_test, task_type, n_outputs
