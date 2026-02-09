@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.datasets import make_moons, make_circles, make_swiss_roll, load_iris
+from sklearn.datasets import make_moons, make_circles, make_swiss_roll, load_iris, load_digits
 from sklearn.model_selection import train_test_split
 
 # ---------------------------
@@ -66,6 +66,27 @@ def generate_mackey_glass(n_samples=2000, tau=17, delta_t=1, beta=0.2, gamma=0.1
     y = np.array(y, dtype=np.float32).reshape(-1,1)
     return X, y
 
+
+# ---------------------------
+# load digits function
+# ---------------------------
+
+def load_digits_dataset(normalize=True):
+    """
+    Digits dataset (8x8 handwritten digits), multiclass classification.
+    Returns flattened images of shape (N, 64).
+    """
+    data = load_digits()
+    X = data.images.reshape(len(data.images), -1).astype(np.float32)
+    y = data.target.astype(np.int64)
+
+    if normalize:
+        # Digits pixels are in range [0, 16]
+        X /= 16.0
+
+    return X, y
+
+
 # ---------------------------
 # Loader function
 # ---------------------------
@@ -101,6 +122,10 @@ def load_dataset(name, test_size=0.2, random_state=42):
         X, y = generate_mackey_glass()
         task_type = "regression"
         n_outputs = 1
+    elif name == "digits":
+        X, y = load_digits_dataset()
+        task_type = "multiclass"
+        n_outputs = len(np.unique(y))  # should be 10
     else:
         raise ValueError(f"Unknown dataset: {name}")
 
