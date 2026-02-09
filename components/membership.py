@@ -28,7 +28,6 @@ class SimpleGaussianMF(nn.Module):
         x_exp = x.unsqueeze(1)
         c_exp = self.centers.unsqueeze(0)
         s_exp = torch.nn.functional.softplus(self.spreads).unsqueeze(0)
-        s_exp = torch.clamp(s_exp, min=1e-6)
 
         mu = torch.exp(-((x_exp - c_exp) ** 2) / (2.0 * (s_exp ** 2)))
         firing = torch.prod(mu, dim=2)
@@ -88,7 +87,6 @@ class GaussianSigmoidMF(nn.Module):
         blend_exp = blend.unsqueeze(0).expand(batch, self.K, self.n_inputs)
         mu_blend = blend_exp * mu_gauss + (1.0 - blend_exp) * mu_sig
         w = torch.prod(mu_blend, dim=2)
-        w = torch.clamp(w, min=1e-8)
 
         if return_parts:
             return w, mu_gauss, mu_sig, blend_exp, mu_blend
