@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from sklearn.datasets import make_moons, make_circles, make_swiss_roll, load_iris, load_digits, load_breast_cancer, load_wine
 from sklearn.model_selection import train_test_split
 
@@ -69,33 +70,54 @@ def load_haberman_dataset():
     return X, y
 
 
+import pandas as pd
+import numpy as np
+
 def load_cryotherapy_dataset():
-    data = np.loadtxt("data/Cryotherapy.csv", delimiter=",", skiprows=1)
-    X = data[:, :-1].astype(np.float32)
-    y_raw = data[:, -1].astype(np.int64)
-    # robust remapping to {0,1}
+    data = np.loadtxt("data/Cryotherapy.csv", delimiter=",")
+    y_raw = data[:, 0].astype(np.int64)
+    X = data[:, 1:].astype(np.float32)
     classes = np.unique(y_raw)
-    assert len(classes) == 2, "Cryotherapy must be binary"
+    assert len(classes) == 2, f"Cryotherapy must be binary, got {classes}"
     mapping = {c: i for i, c in enumerate(classes)}
     y = np.array([mapping[c] for c in y_raw], dtype=np.int64)
-
     return X, y
+
 
 def load_heart_dataset():
-    data = np.loadtxt("data/heart.csv", delimiter=",", skiprows=1)
-    X = data[:, :-1].astype(np.float32)
-    y = (data[:, -1] > 0).astype(np.int64)  # disease → 1
-    return X, y
+    df = pd.read_csv("data/Heart.csv")
+    y = df["AHD"].map({"No": 0, "Yes": 1}).to_numpy(dtype=np.int64)
+    X = df.drop(columns=["AHD"])
+    chest_pain_map = {
+        "typical": 0,
+        "nontypical": 1,
+        "nonanginal": 2,
+        "asymptomatic": 3,
+    }
+    thal_map = {
+        "normal": 0,
+        "fixed": 1,
+        "reversable": 2,
+    }
+    X["ChestPain"] = X["ChestPain"].map(chest_pain_map)
+    X["Thal"] = X["Thal"].map(thal_map)
+    X = X.replace("NA", np.nan)
+    X = X.astype(float)
+    X = X.fillna(X.median())
+    return X.to_numpy(dtype=np.float32), y
 
 
 def load_autism_dataset():
-    data = np.loadtxt("data/autism.csv", delimiter=",", skiprows=1)
-    X = data[:, :-1].astype(np.float32)
-    y_raw = data[:, -1].astype(np.int64)
-    classes = np.unique(y_raw)
+    # Read CSV with mixed types
+    df = pd.read_csv("data/autism.csv")
+    y_raw = df.iloc[:, -1]
+    classes = y_raw.unique()
     assert len(classes) == 2, "Autism dataset must be binary"
     mapping = {c: i for i, c in enumerate(classes)}
-    y = np.array([mapping[c] for c in y_raw], dtype=np.int64)
+    y = y_raw.map(mapping).to_numpy(dtype=np.int64)
+    X_df = df.iloc[:, :-1]
+    X_df = pd.get_dummies(X_df)
+    X = X_df.to_numpy(dtype=np.float32)
     return X, y
 
 
@@ -112,16 +134,14 @@ def load_immunotherapy_dataset():
 
 
 
-def load_pima_diabetes_dataset():
-    data = np.loadtxt("data/pima.csv", delimiter=",")
-    X = data[:, :-1].astype(np.float32)
-    y_raw = data[:, -1].astype(np.int64)
-    classes = np.unique(y_raw)
-    assert len(classes) == 2, "Pima diabetes dataset must be binary"
-    mapping = {c: i for i, c in enumerate(classes)}
-    y = np.array([mapping[c] for c in y_raw], dtype=np.int64)
-    return X, y
 
+def load_pima_diabetes_dataset():
+    df = pd.read_csv("data/diabetes.csv")
+    y = df["Outcome"].to_numpy(dtype=np.int64)
+    classes = np.unique(y)
+    assert set(classes) == {0, 1}, f"Pima must be binary, got {classes}"
+    X = df.drop(columns=["Outcome"]).to_numpy(dtype=np.float32)
+    return X, y
 
 
 def load_breast_cancer_dataset():
