@@ -69,7 +69,6 @@ class ANFISSimple(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w = self.mf_layer(x)
-        w = torch.prod(w, dim=2)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
         w_norm = w / w_sum
 
@@ -95,7 +94,6 @@ class ANFISAdvanced(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         w = self.mf_layer(x)
-        w = torch.prod(w, dim=2)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
         w_norm = w / w_sum
 

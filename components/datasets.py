@@ -94,15 +94,15 @@ def load_dataset(name, test_size=0.2, random_state=42):
     if name == "spiral":
         X, y = make_spirals()
         task_type = "classification"
-        n_outputs = 1
+        n_outputs = 2
     elif name == "circles":
         X, y = make_circles_dataset()
         task_type = "classification"
-        n_outputs = 1
+        n_outputs = 2
     elif name == "moons":
         X, y = make_moons_dataset()
         task_type = "classification"
-        n_outputs = 1
+        n_outputs = 2
     elif name == "swiss-roll":
         X, y = make_swiss_roll_dataset()
         task_type = "regression"
@@ -123,7 +123,11 @@ def load_dataset(name, test_size=0.2, random_state=42):
         raise ValueError(f"Unknown dataset: {name}")
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, shuffle=True, stratify=y if task_type=="classification" else None
+        X, y,
+        test_size=test_size,
+        random_state=random_state,
+        shuffle=True,
+        stratify=y if task_type == "classification" else None
     )
 
     return X_train, X_test, y_train, y_test, task_type, n_outputs
