@@ -52,6 +52,8 @@ def train_model(
         drop_last=False,
     )
 
+    use_reconstruction = getattr(model, "uses_reconstruction", False)
+
     # ---- optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -70,10 +72,15 @@ def train_model(
 
             optimizer.zero_grad(set_to_none=True)
 
-            y_pred, x_hat = model(xb, return_recon=True)
-            cls_loss = loss_fn(y_pred, yb)
-            recon_loss = F.mse_loss(x_hat, xb)
-            loss = beta * cls_loss + (1.0 - beta) * recon_loss
+            if use_reconstruction:
+                y_pred, x_hat = model(xb, return_recon=True)
+                cls_loss = loss_fn(y_pred, yb)
+                recon_loss = F.mse_loss(x_hat, xb)
+                loss = beta * cls_loss + (1.0 - beta) * recon_loss
+            else:
+                y_pred = model(xb)
+                loss = loss_fn(y_pred, yb)
+
 
             loss.backward()
 
@@ -92,11 +99,15 @@ def train_model(
             Xv = X_val_t.to(device)
             yv = y_val_t.to(device)
 
-            outv, x_hat_v = model(Xv, return_recon=True)
+            if use_reconstruction:
+                outv, x_hat_v = model(Xv, return_recon=True)
+                cls_val_loss = loss_fn(outv, yv)
+                recon_val_loss = F.mse_loss(x_hat_v, Xv)
+                val_loss = beta * cls_val_loss + (1.0 - beta) * recon_val_loss
+            else:
+                outv = model(Xv)
+                val_loss = loss_fn(outv, yv)
 
-            cls_val_loss = loss_fn(outv, yv)
-            recon_val_loss = F.mse_loss(x_hat_v, Xv)
-            val_loss = beta * cls_val_loss + (1.0 - beta) * recon_val_loss
 
             # simple metric
             metric_str = ""

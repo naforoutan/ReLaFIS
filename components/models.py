@@ -82,6 +82,7 @@ class ANFISSimple(nn.Module):
 
 class ANFISAdvanced(nn.Module):
     """Takagi–Sugeno ANFIS using blended Gaussian+sigmoid MFs."""
+    uses_reconstruction = True
 
     def __init__(self, centers_init, spreads_init, s_mode: str = "alpha_beta", n_outputs: int = 1):
         super().__init__()
