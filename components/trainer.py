@@ -1,3 +1,6 @@
+import torch.nn.functional as F
+
+
 def train_model(
     model,
     X_train, y_train,
@@ -11,6 +14,7 @@ def train_model(
     patience=30,
     grad_clip=5.0,
     device="cpu",
+    beta=0.9,
 ):
     import numpy as np
     import torch
@@ -65,8 +69,12 @@ def train_model(
             yb = yb.to(device)
 
             optimizer.zero_grad(set_to_none=True)
-            out = model(xb)
-            loss = loss_fn(out, yb)
+
+            y_pred, x_hat = model(xb, return_recon=True)
+            cls_loss = loss_fn(y_pred, yb)
+            recon_loss = F.mse_loss(x_hat, xb)
+            loss = beta * cls_loss + (1.0 - beta) * recon_loss
+
             loss.backward()
 
             if grad_clip is not None:
@@ -83,8 +91,12 @@ def train_model(
         with torch.no_grad():
             Xv = X_val_t.to(device)
             yv = y_val_t.to(device)
-            outv = model(Xv)
-            val_loss = loss_fn(outv, yv).item()
+
+            outv, x_hat_v = model(Xv, return_recon=True)
+
+            cls_val_loss = loss_fn(outv, yv)
+            recon_val_loss = F.mse_loss(x_hat_v, Xv)
+            val_loss = beta * cls_val_loss + (1.0 - beta) * recon_val_loss
 
             # simple metric
             metric_str = ""

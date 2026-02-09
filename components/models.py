@@ -79,6 +79,7 @@ class ANFISSimple(nn.Module):
         y_pred = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
         return y_pred
 
+
 class ANFISAdvanced(nn.Module):
     """Takagi–Sugeno ANFIS using blended Gaussian+sigmoid MFs."""
 
@@ -91,18 +92,30 @@ class ANFISAdvanced(nn.Module):
         self.consequents = nn.Parameter(
             torch.randn(self.K, self.n_inputs + 1, self.n_outputs, dtype=torch.float32) * 0.1
         )
+        self.reconstructor = nn.Linear(self.K, self.n_inputs, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+
+    def forward(self, x: torch.Tensor, return_recon: bool = False):
+        # ---- rule firing
         w = self.mf_layer(x)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
-        w_norm = w / w_sum
+        w_norm = w / w_sum            # φ (B, K)
 
+        # ---- TS consequents (unchanged)
         weights = self.consequents[:, :-1, :]
         bias = self.consequents[:, -1, :]
         linear = torch.einsum("bi,kio->bko", x, weights)
         rule_outputs = linear + bias.unsqueeze(0)
         y = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
-        return y
+
+        if not return_recon:
+            return y
+
+        # ---- reconstruction
+        x_hat = self.reconstructor(w_norm)
+
+        return y, x_hat
+
 
 def create_anfis_model(mf_type, centers_init, spreads_init, n_outputs=1, s_mode="alpha_beta"):
     if mf_type == "simple":
