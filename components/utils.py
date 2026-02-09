@@ -63,9 +63,8 @@ def evaluate_anfis_model(
 
         # classification
         logits = logits_or_preds
-        if logits.ndim == 1:
-            # rare: (B,) treat as 2-class with threshold (not expected in your setup)
-            probs1 = torch.sigmoid(logits)
+        if logits.ndim == 1 or logits.shape[1] == 1:
+            probs1 = torch.sigmoid(logits.view(-1))
             pred = (probs1 >= 0.5).long()
         else:
             pred = torch.argmax(logits, dim=1)
@@ -138,14 +137,14 @@ def evaluate_anfis_model(
             grid_t = torch.tensor(grid_np, dtype=torch.float32, device=device)
             with torch.no_grad():
                 logits = model(grid_t)
-            if logits.ndim == 1:
-                # not expected for your n_outputs=2 binary
-                probs1 = torch.sigmoid(logits).detach().cpu().numpy()
-                return probs1, None
+            if logits.ndim == 1 or logits.shape[1] == 1:
+                probs1 = torch.sigmoid(logits.view(-1)).detach().cpu().numpy()
+                return probs1, (probs1 >= 0.5).astype(int)
             else:
                 probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
                 pred = np.argmax(probs, axis=1)
                 return probs, pred
+
 
         # ---- 3D regression (swiss-roll)
         if task_type == "regression" and n_features == 3:
