@@ -1,6 +1,11 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+from components.models import GIFT
+
 
 
 def evaluate_anfis_model(
@@ -11,355 +16,379 @@ def evaluate_anfis_model(
     s_mode_choice="alpha_beta",
     centers_init=None,
     dataset_name=None,
-    max_rules_to_plot=5,
-    grid_res=300,
+    grid_res=250,
 ):
-    """
-    Clean evaluation utility:
-    - prints train/test error (classification acc + error count; regression RMSE)
-    - prints per-rule, per-feature Gaussian/Sigmoid participation (raw weights from blend)
-    - plots dataset + decision regions (when possible) + rule centers
-    - plots μ parts for advanced MF (Gaussian / Sigmoid / Blended) if supported
-    """
 
     model.eval()
     device = torch.device(device)
+
+    X_train = np.asarray(X_train)
+    X_test  = np.asarray(X_test)
+    y_train = np.asarray(y_train)
+    y_test  = np.asarray(y_test)
 
     X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
     X_test_t  = torch.tensor(X_test,  dtype=torch.float32, device=device)
 
     # ---------------------------
-    # 1) Infer task type
+    # Forward pass
     # ---------------------------
     with torch.no_grad():
         out_train = model(X_train_t)
         out_test  = model(X_test_t)
 
-    # If output is (B, C) => classification; if (B, 1) could be regression or binary
-    out_dim = 1 if out_train.ndim == 1 else out_train.shape[1]
     unique_y = np.unique(y_train)
-
-    # Prefer explicit interpretation:
-    # - If y looks integer labels and #classes >= 2 => classification
-    # - else regression
-    is_int_labels = np.issubdtype(np.asarray(y_train).dtype, np.integer)
-    if is_int_labels and len(unique_y) >= 2:
-        task_type = "classification"
-        n_classes = out_dim  # should match your n_outputs
-    else:
-        task_type = "regression"
-        n_classes = 1
+    is_classification = (
+        np.issubdtype(y_train.dtype, np.integer) and len(unique_y) >= 2
+    )
 
     # ---------------------------
-    # 2) Predictions + metrics
+    # Metrics
     # ---------------------------
-    def _summarize_split(split_name, logits_or_preds, y_true):
-        if task_type == "regression":
+    print("\nFinal Results:")
+    print(f"Mode: {s_mode_choice}")
+
+    def summarize(split_name, logits_or_preds, y_true):
+        if not is_classification:
             pred = logits_or_preds.detach().cpu().numpy().reshape(-1)
-            y_true = np.asarray(y_true).reshape(-1)
-            rmse = float(np.sqrt(np.mean((pred - y_true) ** 2)))
+            rmse = np.sqrt(np.mean((pred - y_true.reshape(-1)) ** 2))
             print(f"{split_name}: RMSE={rmse:.4f}")
-            return {"rmse": rmse}
+            return
 
-        # classification
         logits = logits_or_preds
         if logits.ndim == 1 or logits.shape[1] == 1:
-            probs1 = torch.sigmoid(logits.view(-1))
-            pred = (probs1 >= 0.5).long()
+            probs = torch.sigmoid(logits.view(-1))
+            pred = (probs >= 0.5).long()
         else:
             pred = torch.argmax(logits, dim=1)
 
-        pred_np = pred.detach().cpu().numpy().astype(np.int64)
-        y_true_np = np.asarray(y_true).astype(np.int64)
+        pred_np = pred.detach().cpu().numpy()
+        correct = int((pred_np == y_true).sum())
+        total = len(y_true)
+        acc = correct / total
+        err = 1 - acc
 
-        total = len(y_true_np)
-        correct = int((pred_np == y_true_np).sum())
-        wrong = total - correct
-        acc = correct / max(total, 1)
-        err = wrong / max(total, 1)
+        print(f"{split_name}: accuracy rate {acc:.3f} ({correct}/{total}) | error {err:.3f} ({total-correct})")
 
-        print(f"{split_name}: accuracy rate {acc:.3f} ({correct}/{total}) | error {err:.3f} ({wrong})")
-        return {"acc": acc, "error_rate": err, "correct": correct, "total": total, "wrong": wrong}
+    summarize("Train", out_train, y_train)
+    summarize("Test",  out_test,  y_test)
 
-    print("\nFinal Results:")
-    print(f"Mode: {s_mode_choice}")
-    train_stats = _summarize_split("Train", out_train, y_train)
-    test_stats  = _summarize_split("Test",  out_test,  y_test)
+    # ==========================================================
+    # =================== VISUALIZATION =========================
+    # ==========================================================
 
-    # ---------------------------
-    # 3) MF participation (advanced MF only)
-    #    Prints raw blend weights: Gaussian=blend, Sigmoid=1-blend
-    # ---------------------------
-    def _print_mf_participation():
-        if not hasattr(model, "mf_layer"):
-            return
-        mf = model.mf_layer
+    n_features = X_train.shape[1]
 
-        # We need alpha/beta or C AND return_parts support
-        supports_parts = hasattr(mf, "forward")
-        has_blend_params = hasattr(mf, "alpha") or hasattr(mf, "beta") or hasattr(mf, "C")
-        if not (supports_parts and has_blend_params):
-            return
+    # ----------------------------------------------------------
+    # 1D Regression
+    # ----------------------------------------------------------
+    if not is_classification and n_features == 1:
+        with torch.no_grad():
+            pred_tr = model(X_train_t).cpu().numpy().reshape(-1)
+            pred_te = model(X_test_t).cpu().numpy().reshape(-1)
 
-        # Must call mf_layer(..., return_parts=True)
-        try:
-            with torch.no_grad():
-                w, mu_g, mu_s, blend_exp, mu_blend = mf(X_test_t, return_parts=True)
-        except Exception:
-            return
+        order = np.argsort(X_train[:, 0])
+        plt.figure(figsize=(8, 4))
+        plt.scatter(X_train[:, 0], y_train, s=25, label="Train True")
+        plt.scatter(X_test[:, 0], y_test, marker="^", s=40, label="Test True")
+        plt.plot(X_train[order, 0], pred_tr[order], "--", label="Train Pred")
+        plt.title("1D Regression")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+        return
 
-        # blend_exp: (B, K, n_inputs)
-        # raw participation (weights): gaussian = blend, sigmoid = 1 - blend
-        gauss_w = blend_exp.mean(dim=0).detach().cpu().numpy()          # (K, n_inputs)
-        sig_w   = (1.0 - blend_exp).mean(dim=0).detach().cpu().numpy()  # (K, n_inputs)
+    # ----------------------------------------------------------
+    # 3D Regression (Swiss Roll)
+    # ----------------------------------------------------------
+    if not is_classification and n_features == 3:
+        fig = plt.figure(figsize=(12, 5))
+        ax1 = fig.add_subplot(121, projection="3d")
+        ax2 = fig.add_subplot(122, projection="3d")
 
-        K, D = gauss_w.shape
-        print("\nPer-rule, per-feature MF contributions and raw participation:")
-        for r in range(K):
-            for f in range(D):
-                print(f"Rule {r}, Feature {f}: Raw weight -> Gaussian={gauss_w[r, f]:.4f}, Sigmoid={sig_w[r, f]:.4f}")
+        ax1.scatter(X_train[:, 0], X_train[:, 1], X_train[:, 2], c=y_train, s=10)
+        ax1.set_title("Train (true target)")
 
-    _print_mf_participation()
+        with torch.no_grad():
+            pred_te = model(X_test_t).cpu().numpy().reshape(-1)
 
-    # ---------------------------
-    # 4) Plot dataset + decision region (when possible)
-    # ---------------------------
-    def _plot_dataset_and_boundary():
-        Xtr = np.asarray(X_train)
-        Xte = np.asarray(X_test)
-        ytr = np.asarray(y_train)
-        yte = np.asarray(y_test)
+        ax2.scatter(X_test[:, 0], X_test[:, 1], X_test[:, 2], c=pred_te, s=10)
+        ax2.set_title("Test (predicted)")
 
-        n_features = Xtr.shape[1]
-
-        # ---- helper: predict class on a grid
-        def _predict_grid(grid_np):
-            grid_t = torch.tensor(grid_np, dtype=torch.float32, device=device)
-            with torch.no_grad():
-                logits = model(grid_t)
-            if logits.ndim == 1 or logits.shape[1] == 1:
-                probs1 = torch.sigmoid(logits.view(-1)).detach().cpu().numpy()
-                return probs1, (probs1 >= 0.5).astype(int)
-            else:
-                probs = torch.softmax(logits, dim=1).detach().cpu().numpy()
-                pred = np.argmax(probs, axis=1)
-                return probs, pred
+        plt.tight_layout()
+        plt.show()
+        return
 
 
-        # ---- 3D regression (swiss-roll)
-        if task_type == "regression" and n_features == 3:
-            fig = plt.figure(figsize=(12, 5))
-            ax1 = fig.add_subplot(121, projection="3d")
-            ax2 = fig.add_subplot(122, projection="3d")
+    # ----------------------------------------------------------
+    # 2D Classification (enhanced)
+    # ----------------------------------------------------------
+    if is_classification and n_features == 2:
 
-            # true t/y
-            ax1.scatter(Xtr[:, 0], Xtr[:, 1], Xtr[:, 2], c=ytr.reshape(-1), s=10)
-            ax1.set_title("Train (true target)")
-            ax1.set_xlabel("X"); ax1.set_ylabel("Y"); ax1.set_zlabel("Z")
+        x_min, x_max = X_train[:, 0].min()-0.5, X_train[:, 0].max()+0.5
+        y_min, y_max = X_train[:, 1].min()-0.5, X_train[:, 1].max()+0.5
 
-            # predicted t/y on test
-            with torch.no_grad():
-                pred_te = model(torch.tensor(Xte, dtype=torch.float32, device=device)).detach().cpu().numpy().reshape(-1)
-            ax2.scatter(Xte[:, 0], Xte[:, 1], Xte[:, 2], c=pred_te, s=10)
-            ax2.set_title("Test (predicted target)")
-            ax2.set_xlabel("X"); ax2.set_ylabel("Y"); ax2.set_zlabel("Z")
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, grid_res),
+            np.linspace(y_min, y_max, grid_res)
+        )
 
-            plt.tight_layout()
-            plt.show()
-            return
+        grid = np.c_[xx.ravel(), yy.ravel()]
+        grid_t = torch.tensor(grid, dtype=torch.float32, device=device)
 
-        # ---- 1D regression
-        if task_type == "regression" and n_features == 1:
-            with torch.no_grad():
-                pred_tr = model(torch.tensor(Xtr, dtype=torch.float32, device=device)).detach().cpu().numpy().reshape(-1)
-                pred_te = model(torch.tensor(Xte, dtype=torch.float32, device=device)).detach().cpu().numpy().reshape(-1)
+        with torch.no_grad():
+            logits = model(grid_t)
 
-            order = np.argsort(Xtr[:, 0])
-            plt.figure(figsize=(8, 4))
-            plt.scatter(Xtr[:, 0], ytr.reshape(-1), label="Train true", s=25)
-            plt.scatter(Xte[:, 0], yte.reshape(-1), label="Test true",  s=40, marker="^")
-            plt.plot(Xtr[order, 0], pred_tr[order], "--", label="Train pred")
-            plt.title("1D Regression")
-            plt.xlabel("x"); plt.ylabel("y")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-            return
-
-        # ---- Iris special: show petal features (2,3)
-        if dataset_name == "iris" and task_type == "classification" and n_features >= 4:
-            f1, f2 = 2, 3
-            baseline = Xtr.mean(axis=0)
-
-            x_min, x_max = Xtr[:, f1].min() - 0.5, Xtr[:, f1].max() + 0.5
-            y_min, y_max = Xtr[:, f2].min() - 0.5, Xtr[:, f2].max() + 0.5
-            xx, yy = np.meshgrid(np.linspace(x_min, x_max, grid_res),
-                                 np.linspace(y_min, y_max, grid_res))
-
-            grid = np.tile(baseline, (xx.size, 1)).astype(np.float32)
-            grid[:, f1] = xx.ravel()
-            grid[:, f2] = yy.ravel()
-
-            _, pred = _predict_grid(grid)
+        if logits.ndim == 1 or logits.shape[1] == 1:
+            probs = torch.sigmoid(logits.view(-1)).cpu().numpy()
+            Z = probs.reshape(xx.shape)
+        else:
+            pred = torch.argmax(logits, dim=1).cpu().numpy()
             Z = pred.reshape(xx.shape)
 
-            plt.figure(figsize=(8, 6))
-            plt.contourf(xx, yy, Z, levels=np.arange(n_classes + 1) - 0.5, alpha=0.6)
-            plt.scatter(Xtr[:, f1], Xtr[:, f2], c=ytr, edgecolor="k", s=35, label="Train")
-            plt.scatter(Xte[:, f1], Xte[:, f2], c=yte, edgecolor="k", s=55, marker="^", label="Test")
+        plt.figure(figsize=(8, 6))
 
-            if centers_init is not None and centers_init.shape[1] >= max(f1, f2) + 1:
-                plt.scatter(centers_init[:, f1], centers_init[:, f2], s=200, marker="X", edgecolor="k", label="Rule Centers")
-
-            plt.title(f"Iris decision regions | mode={s_mode_choice}")
-            plt.xlabel(f"Feature {f1}"); plt.ylabel(f"Feature {f2}")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-            return
-
-        # ---- Generic 2D classification plot (moons/circles/spiral)
-        if task_type == "classification" and n_features == 2:
-            x_min, x_max = Xtr[:, 0].min() - 0.5, Xtr[:, 0].max() + 0.5
-            y_min, y_max = Xtr[:, 1].min() - 0.5, Xtr[:, 1].max() + 0.5
-            xx, yy = np.meshgrid(np.linspace(x_min, x_max, grid_res),
-                                 np.linspace(y_min, y_max, grid_res))
-            grid = np.c_[xx.ravel(), yy.ravel()].astype(np.float32)
-
-            probs, pred = _predict_grid(grid)
-
-            plt.figure(figsize=(8, 6))
-            if n_classes == 2 and probs is not None:
-                # show P(class=1)
-                p1 = probs[:, 1].reshape(xx.shape)
-                plt.contourf(xx, yy, p1, levels=30, alpha=0.6)
-                plt.colorbar(label="P(class=1)")
-            else:
-                Z = pred.reshape(xx.shape)
-                plt.contourf(xx, yy, Z, levels=np.arange(n_classes + 1) - 0.5, alpha=0.6)
-                plt.colorbar(label="Predicted class")
-
-            plt.scatter(Xtr[:, 0], Xtr[:, 1], c=ytr, edgecolor="k", s=35, label="Train")
-            plt.scatter(Xte[:, 0], Xte[:, 1], c=yte, edgecolor="k", s=55, marker="^", label="Test")
-
-            if centers_init is not None:
-                plt.scatter(centers_init[:, 0], centers_init[:, 1], s=200, marker="X", edgecolor="k", label="Rule Centers")
-
-            plt.title(f"Decision regions | dataset={dataset_name} | mode={s_mode_choice}")
-            plt.xlabel("Feature 0"); plt.ylabel("Feature 1")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-            return
-
-        # ---- Fallback for higher-D classification: plot first 2 dims
-        if task_type == "classification" and n_features > 2:
-            f1, f2 = 0, 1
-            baseline = Xtr.mean(axis=0)
-
-            x_min, x_max = Xtr[:, f1].min() - 0.5, Xtr[:, f1].max() + 0.5
-            y_min, y_max = Xtr[:, f2].min() - 0.5, Xtr[:, f2].max() + 0.5
-            xx, yy = np.meshgrid(np.linspace(x_min, x_max, grid_res),
-                                 np.linspace(y_min, y_max, grid_res))
-
-            grid = np.tile(baseline, (xx.size, 1)).astype(np.float32)
-            grid[:, f1] = xx.ravel()
-            grid[:, f2] = yy.ravel()
-
-            _, pred = _predict_grid(grid)
-            Z = pred.reshape(xx.shape)
-
-            plt.figure(figsize=(8, 6))
-            plt.contourf(xx, yy, Z, levels=np.arange(n_classes + 1) - 0.5, alpha=0.6)
+        if logits.ndim == 1 or logits.shape[1] == 1:
+            plt.contourf(xx, yy, Z, levels=30, alpha=0.5)
+            plt.colorbar(label="P(class=1)")
+        else:
+            levels = np.arange(Z.max() + 2) - 0.5
+            plt.contourf(xx, yy, Z, levels=levels, alpha=0.5)
             plt.colorbar(label="Predicted class")
 
-            plt.scatter(Xtr[:, f1], Xtr[:, f2], c=ytr, edgecolor="k", s=35, label="Train")
-            plt.scatter(Xte[:, f1], Xte[:, f2], c=yte, edgecolor="k", s=55, marker="^", label="Test")
+        plt.xlim(x_min, x_max)
+        plt.ylim(y_min, y_max)
 
-            if centers_init is not None and centers_init.shape[1] >= 2:
-                plt.scatter(centers_init[:, f1], centers_init[:, f2], s=200, marker="X", edgecolor="k", label="Rule Centers")
 
-            plt.title(f"Decision regions (proj) | mode={s_mode_choice}")
-            plt.xlabel(f"Feature {f1}"); plt.ylabel(f"Feature {f2}")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-            return
+        # Train
+        plt.scatter(
+            X_train[:, 0], X_train[:, 1],
+            c=y_train,
+            edgecolor="black",
+            s=40,
+            label="Train"
+        )
 
-    _plot_dataset_and_boundary()
+        # Test (larger triangle markers)
+        plt.scatter(
+            X_test[:, 0], X_test[:, 1],
+            c=y_test,
+            marker="^",
+            edgecolor="black",
+            s=70,
+            label="Test"
+        )
 
-    # ---------------------------
-    # 5) Plot μ parts (advanced MF only)
-    # ---------------------------
-    def _plot_mu_parts_advanced():
-        if not hasattr(model, "mf_layer"):
-            return
-        mf = model.mf_layer
+        # Plot rule centers (K)
+        if centers_init is not None:
+            plt.scatter(
+                centers_init[:, 0],
+                centers_init[:, 1],
+                marker="X",
+                s=250,
+                c="white",
+                edgecolor="black",
+                linewidth=2,
+                label="Rule Centers (K)"
+            )
 
-        has_blend_params = hasattr(mf, "alpha") or hasattr(mf, "beta") or hasattr(mf, "C")
-        if not has_blend_params:
-            return
+            # Annotate rule index
+            for i, (cx, cy) in enumerate(centers_init):
+                plt.text(cx, cy, f"K{i}", fontsize=10, weight="bold")
 
-        # Need access to centers to select x-range per feature
-        if not hasattr(mf, "c"):
-            return
+        plt.title(f"Decision Boundary | dataset={dataset_name}")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
 
-        K = getattr(model, "K", None) or getattr(mf, "K", None) or mf.c.shape[0]
-        D = mf.c.shape[1]
+    # ----------------------------------------------------------
+    # High-D Classification → PCA projection (FIXED with scaling)
+    # ----------------------------------------------------------
+    if is_classification and n_features > 2:
 
-        # Use feature-wise ranges from training data if possible
-        Xtr = np.asarray(X_train)
-        if Xtr.ndim == 2 and Xtr.shape[1] == D:
-            mins = Xtr.min(axis=0)
-            maxs = Xtr.max(axis=0)
+        from sklearn.preprocessing import StandardScaler
+
+        # Scale first
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled  = scaler.transform(X_test)
+
+        # PCA on scaled data
+        pca = PCA(n_components=2, svd_solver="full")
+        X_train_2d = pca.fit_transform(X_train_scaled)
+        X_test_2d  = pca.transform(X_test_scaled)
+
+        x_min, x_max = X_train_2d[:, 0].min()-0.5, X_train_2d[:, 0].max()+0.5
+        y_min, y_max = X_train_2d[:, 1].min()-0.5, X_train_2d[:, 1].max()+0.5
+
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, grid_res),
+            np.linspace(y_min, y_max, grid_res)
+        )
+
+        grid_2d = np.c_[xx.ravel(), yy.ravel()]
+
+        #  Reverse PCA → scaled space
+        grid_scaled = pca.inverse_transform(grid_2d)
+
+        # Reverse scaling → original feature space
+        grid_orig = scaler.inverse_transform(grid_scaled)
+
+        grid_orig = np.clip(
+            grid_orig,
+            X_train.min(axis=0),
+            X_train.max(axis=0)
+        )
+
+
+        grid_t = torch.tensor(grid_orig, dtype=torch.float32, device=device)
+
+        with torch.no_grad():
+            logits = model(grid_t)
+
+        if logits.ndim == 1 or logits.shape[1] == 1:
+            probs = torch.sigmoid(logits.view(-1)).cpu().numpy()
+            Z = probs.reshape(xx.shape)
         else:
-            mins = np.full(D, -2.0, dtype=np.float32)
-            maxs = np.full(D,  2.0, dtype=np.float32)
+            pred = torch.argmax(logits, dim=1).cpu().numpy()
+            Z = pred.reshape(xx.shape)
 
-        K_to_plot = min(int(K), int(max_rules_to_plot))
+        plt.figure(figsize=(8, 6))
+        if logits.ndim == 1 or logits.shape[1] == 1:
+            # Binary → probability map
+            plt.contourf(xx, yy, Z, levels=30, alpha=0.5)
+            plt.colorbar(label="P(class=1)")
+        else:
+            # Multiclass → discrete regions
+            levels = np.arange(Z.max() + 2) - 0.5
+            plt.contourf(xx, yy, Z, levels=levels, alpha=0.5)
+            plt.colorbar(label="Predicted class")
 
-        for r in range(K_to_plot):
-            fig, axes = plt.subplots(1, D, figsize=(5 * D, 4))
-            if D == 1:
-                axes = [axes]
+        plt.xlim(x_min, x_max)
+        plt.ylim(y_min, y_max)  
 
-            for f in range(D):
-                x = np.linspace(mins[f] - 0.5, maxs[f] + 0.5, 400, dtype=np.float32)
+        # Train
+        plt.scatter(
+            X_train_2d[:, 0], X_train_2d[:, 1],
+            c=y_train,
+            edgecolor="black",
+            s=40,
+            label="Train"
+        )
 
-                # Build input where only feature f varies, others fixed at their centers for this rule
-                x_in = np.zeros((len(x), D), dtype=np.float32)
-                with torch.no_grad():
-                    centers_rf = mf.c[r].detach().cpu().numpy()
-                x_in[:] = centers_rf
-                x_in[:, f] = x
+        # Test
+        plt.scatter(
+            X_test_2d[:, 0], X_test_2d[:, 1],
+            c=y_test,
+            marker="^",
+            edgecolor="black",
+            s=70,
+            label="Test"
+        )
 
-                x_t = torch.tensor(x_in, dtype=torch.float32, device=device)
+        # Rule centers
+        if centers_init is not None:
+            centers_scaled = scaler.transform(centers_init)
+            centers_2d = pca.transform(centers_scaled)
 
-                with torch.no_grad():
-                    w, mu_g, mu_s, blend_exp, mu_blend = mf(x_t, return_parts=True)
+            plt.scatter(
+                centers_2d[:, 0],
+                centers_2d[:, 1],
+                marker="X",
+                s=250,
+                c="white",
+                edgecolor="black",
+                linewidth=2,
+                label="Rule Centers (K)"
+            )
 
-                mu_gf = mu_g[:, r, f].detach().cpu().numpy()
-                mu_sf = mu_s[:, r, f].detach().cpu().numpy()
-                mu_bf = mu_blend[:, r, f].detach().cpu().numpy()
+            for i, (cx, cy) in enumerate(centers_2d):
+                plt.text(cx, cy, f"K{i}", fontsize=10, weight="bold")
 
-                ax = axes[f]
-                ax.plot(x, mu_gf, label="Gaussian")
-                ax.plot(x, mu_sf, label="Sigmoid")
-                ax.plot(x, mu_bf, "--", label="Blended")
+        plt.title(f"PCA Projection | dataset={dataset_name}")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
 
-                center_val = centers_rf[f]
-                ax.axvline(center_val, linestyle=":", alpha=0.7, label=f"center={center_val:.2f}")
+    plot_gift_memberships(model, X_train, device=device)
 
-                ax.set_title(f"Rule {r}, Feature {f}")
-                ax.set_ylim(0, 1.05)
-                ax.grid(True)
-                ax.legend(loc="upper right")
 
-            plt.suptitle(f"Membership parts (mode={s_mode_choice}) | Rule {r}")
-            plt.tight_layout()
-            plt.show()
 
-        if K > K_to_plot:
-            print(f"\nNote: Plotted μ parts for first {K_to_plot} rules out of {K} total rules.")
+def plot_gift_memberships(model, X_train, device="cpu"):
 
-    _plot_mu_parts_advanced()
+    if not hasattr(model, "mf_layer"):
+        print("Model has no mf_layer.")
+        return
+
+    mf = model.mf_layer
+
+    if not isinstance(mf, GIFT):
+        print("MF layer is not GIFT.")
+        return
+
+    device = torch.device(device)
+    X_train = np.asarray(X_train)
+
+    K = mf.K
+    D = mf.n_inputs
+
+    mf.eval()
+
+    for i in range(K):
+        print(f"\n=== Rule {i} ===")
+
+        fig, axes = plt.subplots(1, D, figsize=(5 * D, 4))
+        if D == 1:
+            axes = [axes]
+
+        for j in range(D):
+
+            # ---- get learned parameters
+            center = mf.m[i, j].detach().cpu().item()
+            sigma  = F.softplus(mf.phi[i, j]).detach().cpu().item()
+            slope  = F.softplus(mf.s[i, j]).detach().cpu().item()
+
+            # define x-range around center
+            x_vals = np.linspace(center - 5*sigma,
+                                 center + 5*sigma,
+                                 400)
+
+            x_tensor = torch.tensor(
+                np.tile(center, (len(x_vals), D)),
+                dtype=torch.float32,
+                device=device
+            )
+
+            x_tensor[:, j] = torch.tensor(x_vals, device=device)
+
+            with torch.no_grad():
+                w, mu_pos, mu_neg, mu_g, mu_l, mu_r, d, mu_blend = mf(
+                    x_tensor, return_parts=True
+                )
+
+            mu_pos = mu_pos[:, i, j].cpu().numpy()
+            mu_neg = mu_neg[:, i, j].cpu().numpy()
+            mu_g   = mu_g[:, i, j].cpu().numpy()
+            mu_l   = mu_l[:, i, j].cpu().numpy()
+            mu_r   = mu_r[:, i, j].cpu().numpy()
+            mu_bl  = mu_blend[:, i, j].cpu().numpy()
+
+            ax = axes[j]
+
+            ax.plot(x_vals, mu_pos, label="mu+ (Gaussian)")
+            ax.plot(x_vals, mu_neg, label="mu- (Negation)")
+            ax.plot(x_vals, mu_g,   label="mu_g (Greater)")
+            ax.plot(x_vals, mu_l,   label="mu_l (Less)")
+            ax.plot(x_vals, mu_r,   label="mu_r (Relax)")
+            ax.plot(x_vals, mu_bl,  "--", linewidth=3, label="Final μ (GIFT)")
+
+            ax.axvline(center, linestyle=":", label="center m")
+
+            ax.set_title(f"Feature {j}")
+            ax.set_ylim(-0.05, 1.05)
+            ax.grid(True)
+
+        plt.suptitle(f"GIFT Memberships | Rule {i}")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()

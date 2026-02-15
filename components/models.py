@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from .membership import GaussianSigmoidMF, SimpleGaussianMF
+from .membership import GaussianSigmoidMF, SimpleGaussianMF, GIFT
 
 
 def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, maxiter: int = 2000):
@@ -28,6 +28,7 @@ def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, m
 
     return np.array(cntr, dtype=np.float32), np.array(spreads, dtype=np.float32)
 
+
 def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", seed=42):
     np.random.seed(seed)
 
@@ -51,7 +52,6 @@ def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", see
         raise ValueError(f"Unknown method: {method}")
 
     return centers, spreads
-
 
 
 class ANFISSimple(nn.Module):
@@ -81,41 +81,51 @@ class ANFISSimple(nn.Module):
 
 
 class ANFISAdvanced(nn.Module):
-    """Takagi–Sugeno ANFIS using blended Gaussian+sigmoid MFs."""
     uses_reconstruction = True
 
-    def __init__(self, centers_init, spreads_init, s_mode: str = "alpha_beta", n_outputs: int = 1):
+    def __init__(self, centers_init, spreads_init, s_mode="alpha_beta",
+                 n_outputs: int = 1, dropout_prob: float = 0.0):
         super().__init__()
         self.K = centers_init.shape[0]
         self.n_inputs = centers_init.shape[1]
         self.n_outputs = n_outputs
-        self.mf_layer = GaussianSigmoidMF(centers_init, spreads_init, s_mode=s_mode)
+        self.dropout_prob = dropout_prob
+
+        self.mf_layer = GIFT(centers_init, spreads_init)
         self.consequents = nn.Parameter(
             torch.randn(self.K, self.n_inputs + 1, self.n_outputs, dtype=torch.float32) * 0.1
         )
-        self.reconstructor = nn.Linear(self.K, self.n_inputs, bias=False)
 
+        self.reconstructor = nn.Linear(self.K, self.n_inputs, bias=False)
+        self.rule_dropout = nn.Dropout1d(p=dropout_prob)
 
     def forward(self, x: torch.Tensor, return_recon: bool = False):
         # ---- rule firing
-        w = self.mf_layer(x)
+        w = self.mf_layer(x)                                  # (B, K)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
-        w_norm = w / w_sum            # φ (B, K)
+        phi = w / w_sum                                       # (B, K) normalized firing
 
-        # ---- TS consequents (unchanged)
+        # keep a clean copy for reconstruction
+        phi_recon = phi
+
+        # dropout for classification path only
+        if self.training and self.dropout_prob > 0:
+            phi = self.rule_dropout(phi)
+            phi = phi / (phi.sum(dim=1, keepdim=True) + 1e-8)
+
+        # ---- TS consequents
         weights = self.consequents[:, :-1, :]
         bias = self.consequents[:, -1, :]
         linear = torch.einsum("bi,kio->bko", x, weights)
         rule_outputs = linear + bias.unsqueeze(0)
-        y = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
+        y = torch.sum(phi.unsqueeze(-1) * rule_outputs, dim=1)
 
         if not return_recon:
             return y
 
-        # ---- reconstruction
-        x_hat = self.reconstructor(w_norm)
-
+        x_hat = self.reconstructor(phi_recon)
         return y, x_hat
+
 
 
 def create_anfis_model(mf_type, centers_init, spreads_init, n_outputs=1, s_mode="alpha_beta"):

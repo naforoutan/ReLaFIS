@@ -11,10 +11,10 @@ def train_model(
     lr=1e-3,
     batch_size=128,
     weight_decay=0.0,
-    patience=30,
     grad_clip=5.0,
     device="cpu",
-    beta=0.9,
+    beta_start=0.1,
+    beta_end=1.0,
 ):
     import numpy as np
     import torch
@@ -57,15 +57,16 @@ def train_model(
     # ---- optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    best_val = float("inf")
-    best_state = None
-    bad_epochs = 0
-
     for epoch in range(1, n_epochs + 1):
+
+        beta = beta_start + (beta_end - beta_start) * (epoch - 1) / (n_epochs - 1)
+        beta = min(beta, beta_end)
+
         # ---- train
         model.train()
         total = 0.0
         n = 0
+        
         for xb, yb in train_loader:
             xb = xb.to(device)
             yb = yb.to(device)
@@ -127,19 +128,7 @@ def train_model(
         if epoch == 1 or epoch % 100 == 0 or epoch == n_epochs:
             print(f"epoch {epoch:4d} | train_loss={train_loss:.6f} | val_loss={val_loss:.6f}{metric_str}")
 
-        # ---- early stopping on val
-        if val_loss < best_val - 1e-8:
-            best_val = val_loss
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            bad_epochs = 0
-        else:
-            bad_epochs += 1
-            if bad_epochs >= patience:
-                print(f"Early stopping at epoch {epoch} (best val_loss={best_val:.6f})")
-                break
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
     model = model.to(device)
     model.eval()
     return model

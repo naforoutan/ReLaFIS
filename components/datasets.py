@@ -2,6 +2,9 @@ import numpy as np
 import pandas as pd
 from sklearn.datasets import make_moons, make_circles, make_swiss_roll, load_iris, load_digits, load_breast_cancer, load_wine
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+#from torchvision.datasets import MNIST
+#from torchvision import transforms
 
 
 def make_swiss_roll_dataset(n_samples=1000, noise=0.1):
@@ -70,19 +73,20 @@ def load_haberman_dataset():
     return X, y
 
 
-import pandas as pd
-import numpy as np
 
 def load_cryotherapy_dataset():
     data = np.loadtxt("data/Cryotherapy.csv", delimiter=",")
     y_raw = data[:, 0].astype(np.int64)
     X = data[:, 1:].astype(np.float32)
+
+    scaler = StandardScaler()
+    X = scaler.fit_transform(X).astype(np.float32)
+
     classes = np.unique(y_raw)
-    assert len(classes) == 2, f"Cryotherapy must be binary, got {classes}"
     mapping = {c: i for i, c in enumerate(classes)}
     y = np.array([mapping[c] for c in y_raw], dtype=np.int64)
-    return X, y
 
+    return X, y
 
 def load_heart_dataset():
     df = pd.read_csv("data/Heart.csv")
@@ -209,6 +213,38 @@ def load_digits_dataset(normalize=True):
     return X, y
 
 
+'''
+def load_mnist_dataset(normalize=True, flatten=True):
+    """
+    MNIST dataset (28x28 handwritten digits), multiclass classification.
+    Returns flattened images of shape (N, 784) by default.
+    """
+
+    transform_list = [transforms.ToTensor()]
+    transform = transforms.Compose(transform_list)
+
+    train_data = MNIST(root="data", train=True, download=True, transform=transform)
+    test_data  = MNIST(root="data", train=False, download=True, transform=transform)
+
+    X_train = train_data.data.numpy().astype(np.float32)
+    y_train = train_data.targets.numpy().astype(np.int64)
+
+    X_test = test_data.data.numpy().astype(np.float32)
+    y_test = test_data.targets.numpy().astype(np.int64)
+
+    # Normalize to [0,1]
+    if normalize:
+        X_train /= 255.0
+        X_test  /= 255.0
+
+    # Flatten 28x28 → 784
+    if flatten:
+        X_train = X_train.reshape(len(X_train), -1)
+        X_test  = X_test.reshape(len(X_test), -1)
+
+    return X_train, X_test, y_train, y_test
+'''
+
 
 # ---------------------------
 # Loader function
@@ -306,6 +342,11 @@ def load_dataset(name, test_size=0.2, random_state=42):
         task_type = "classification"
         n_outputs = len(np.unique(y))  # 10
 
+    elif name == "mnist":
+        X_train, X_test, y_train, y_test = load_mnist_dataset()
+        task_type = "classification"
+        n_outputs = 10
+        return X_train, X_test, y_train, y_test, task_type, n_outputs
     else:
         raise ValueError(f"Unknown dataset: {name}")
 
@@ -324,5 +365,3 @@ def load_dataset(name, test_size=0.2, random_state=42):
     )
 
     return X_train, X_test, y_train, y_test, task_type, n_outputs
-
-
