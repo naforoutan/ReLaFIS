@@ -137,8 +137,6 @@ def load_immunotherapy_dataset():
     return X, y
 
 
-
-
 def load_pima_diabetes_dataset():
     df = pd.read_csv("data/diabetes.csv")
     y = df["Outcome"].to_numpy(dtype=np.int64)
@@ -148,10 +146,117 @@ def load_pima_diabetes_dataset():
     return X, y
 
 
-def load_breast_cancer_dataset():
+
+def load_adult_income_dataset():
+    """
+    Adult Census Income dataset (offline version).
+    Binary classification: income <=50K (0) vs >50K (1)
+    """
+    column_names = [
+        'age', 'workclass', 'fnlwgt', 'education', 'education-num',
+        'marital-status', 'occupation', 'relationship', 'race', 'sex',
+        'capital-gain', 'capital-loss', 'hours-per-week', 'native-country', 'income'
+    ]
+    
+    # Load local files
+    train_data = pd.read_csv("data/adult.data", names=column_names, skipinitialspace=True)
+    test_data = pd.read_csv("data/adult.test", names=column_names, skiprows=1, skipinitialspace=True)
+    
+    # Combine train and test
+    df = pd.concat([train_data, test_data], ignore_index=True)
+    
+    # Remove rows with missing values (indicated by '?')
+    df = df.replace('?', np.nan)
+    df = df.dropna()
+    
+    # Encode categorical variables
+    categorical_cols = ['workclass', 'education', 'marital-status', 'occupation', 
+                        'relationship', 'race', 'sex', 'native-country']
+    
+    df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+    
+    # Encode target: income <=50K -> 0, >50K -> 1
+    y = df['income'].map({'<=50K': 0, '>50K': 1}).to_numpy(dtype=np.int64)
+    
+    # Drop target column
+    X = df.drop(columns=['income']).to_numpy(dtype=np.float32)
+    
+    return X, y
+
+
+def load_bank_marketing_dataset():
+    """
+    Bank Marketing dataset (offline version).
+    Binary classification: no (0) vs yes (1) for term deposit subscription
+    """
+    df = pd.read_csv("data/bank-full.csv", sep=';')
+    
+    # Encode target: 'no' -> 0, 'yes' -> 1
+    y = df['y'].map({'no': 0, 'yes': 1}).to_numpy(dtype=np.int64)
+    
+    # Drop target and duration (highly predictive for test data)
+    X_df = df.drop(columns=['y', 'duration'] if 'duration' in df.columns else ['y'])
+    
+    # Encode categorical variables
+    categorical_cols = X_df.select_dtypes(include=['object']).columns.tolist()
+    X_df = pd.get_dummies(X_df, columns=categorical_cols, drop_first=True)
+    
+    X = X_df.to_numpy(dtype=np.float32)
+    
+    return X, y
+
+
+def load_car_evaluation_dataset():
+    """
+    Car Evaluation dataset (offline version).
+    Multi-class classification: acceptability levels
+    Classes: unacc (0), acc (1), good (2), vgood (3)
+    """
+    column_names = ['buying', 'maint', 'doors', 'persons', 'lug_boot', 'safety', 'class']
+    
+    df = pd.read_csv("data/car.data", names=column_names)
+    
+    # Encode categorical features
+    categorical_cols = ['buying', 'maint', 'doors', 'persons', 'lug_boot', 'safety']
+    df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
+    
+    # Encode target: class values
+    class_mapping = {
+        'unacc': 0,
+        'acc': 1,
+        'good': 2,
+        'vgood': 3
+    }
+    y = df['class'].map(class_mapping).to_numpy(dtype=np.int64)
+    
+    X = df.drop(columns=['class']).to_numpy(dtype=np.float32)
+    
+    return X, y
+
+
+def load_breast_cancer_wisconsin_dataset():
+    """
+    Breast Cancer Wisconsin (Diagnostic) dataset.
+    Binary classification: Malignant (0) vs Benign (1)
+    """
+    from sklearn.datasets import load_breast_cancer
     data = load_breast_cancer()
     X = data.data.astype(np.float32)
-    y = data.target.astype(np.int64)
+    y = data.target.astype(np.int64)  # 0=malignant, 1=benign
+    return X, y
+
+def load_credit_card_clients_dataset():
+    """
+    Default of Credit Card Clients dataset (offline version).
+    Binary classification: default payment (0=no, 1=yes)
+    """
+    # Load Excel file
+    df = pd.read_excel("data/default_of_credit_card_clients.xls", header=1)
+    
+    # First column is ID, drop it
+    X = df.iloc[:, 1:-1].to_numpy(dtype=np.float32)
+    y = df.iloc[:, -1].to_numpy(dtype=np.int64)
+    
     return X, y
 
 
@@ -213,43 +318,9 @@ def load_digits_dataset(normalize=True):
     return X, y
 
 
-'''
-def load_mnist_dataset(normalize=True, flatten=True):
-    """
-    MNIST dataset (28x28 handwritten digits), multiclass classification.
-    Returns flattened images of shape (N, 784) by default.
-    """
-
-    transform_list = [transforms.ToTensor()]
-    transform = transforms.Compose(transform_list)
-
-    train_data = MNIST(root="data", train=True, download=True, transform=transform)
-    test_data  = MNIST(root="data", train=False, download=True, transform=transform)
-
-    X_train = train_data.data.numpy().astype(np.float32)
-    y_train = train_data.targets.numpy().astype(np.int64)
-
-    X_test = test_data.data.numpy().astype(np.float32)
-    y_test = test_data.targets.numpy().astype(np.int64)
-
-    # Normalize to [0,1]
-    if normalize:
-        X_train /= 255.0
-        X_test  /= 255.0
-
-    # Flatten 28x28 → 784
-    if flatten:
-        X_train = X_train.reshape(len(X_train), -1)
-        X_test  = X_test.reshape(len(X_test), -1)
-
-    return X_train, X_test, y_train, y_test
-'''
-
-
 # ---------------------------
 # Loader function
 # ---------------------------
-
 
 def load_dataset(name, test_size=0.2, random_state=42):
 
@@ -314,11 +385,6 @@ def load_dataset(name, test_size=0.2, random_state=42):
         task_type = "classification"
         n_outputs = 1
 
-    elif name == "breast-cancer":
-        X, y = load_breast_cancer_dataset()
-        task_type = "classification"
-        n_outputs = 1
-
     # ---------------------------
     # Multi-class classification datasets
     # ---------------------------
@@ -347,6 +413,31 @@ def load_dataset(name, test_size=0.2, random_state=42):
         task_type = "classification"
         n_outputs = 10
         return X_train, X_test, y_train, y_test, task_type, n_outputs
+    
+    elif name == "breast-cancer-wisconsin":
+        X, y = load_breast_cancer_wisconsin_dataset()
+        task_type = "classification"
+        n_outputs = 1
+
+    elif name == "adult-income":
+        X, y = load_adult_income_dataset()
+        task_type = "classification"
+        n_outputs = 1
+
+    elif name == "bank-marketing":
+        X, y = load_bank_marketing_dataset()
+        task_type = "classification"
+        n_outputs = 1
+
+    elif name == "car-evaluation":
+        X, y = load_car_evaluation_dataset()
+        task_type = "classification"
+        n_outputs = len(np.unique(y))  # 4 classes
+
+    elif name == "credit-card":
+        X, y = load_credit_card_clients_dataset()
+        task_type = "classification"
+        n_outputs = 1
     else:
         raise ValueError(f"Unknown dataset: {name}")
 
@@ -363,5 +454,10 @@ def load_dataset(name, test_size=0.2, random_state=42):
         shuffle=True,
         stratify=stratify
     )
+
+    # Normalize feature values to prevent large raw logits and stabilize training.
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train).astype(np.float32)
+    X_test = scaler.transform(X_test).astype(np.float32)
 
     return X_train, X_test, y_train, y_test, task_type, n_outputs
