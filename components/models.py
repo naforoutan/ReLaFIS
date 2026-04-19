@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import numpy as np
+import skfuzzy as fuzz 
 
-from .membership import GaussianSigmoidMF, SimpleGaussianMF, GIFT
+from .membership import SimpleGaussianMF, GIFT
 
 
 def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, maxiter: int = 2000):
-    import skfuzzy as fuzz 
     X_t = X.T
     cntr, u, _, _, _, _, _ = fuzz.cluster.cmeans(
         X_t,
@@ -67,7 +67,7 @@ class ANFISSimple(nn.Module):
             torch.randn(self.K, self.n_inputs + 1, self.n_outputs, dtype=torch.float32) * 0.1
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, return_phi: bool = False) -> torch.Tensor:
         w = self.mf_layer(x)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
         w_norm = w / w_sum
@@ -77,41 +77,31 @@ class ANFISSimple(nn.Module):
         linear = torch.einsum("bi,kio->bko", x, weights)
         rule_outputs = linear + bias.unsqueeze(0)
         y_pred = torch.sum(w_norm.unsqueeze(-1) * rule_outputs, dim=1)
+
+        if return_phi:
+            return y_pred, w_norm
+
         return y_pred
 
 
 class ANFISAdvanced(nn.Module):
-    uses_reconstruction = True
-
     def __init__(self, centers_init, spreads_init, s_mode="alpha_beta",
-                 n_outputs: int = 1, dropout_prob: float = 0.0):
+                 n_outputs: int = 1):
         super().__init__()
         self.K = centers_init.shape[0]
         self.n_inputs = centers_init.shape[1]
         self.n_outputs = n_outputs
-        self.dropout_prob = dropout_prob
 
         self.mf_layer = GIFT(centers_init, spreads_init)
         self.consequents = nn.Parameter(
             torch.randn(self.K, self.n_inputs + 1, self.n_outputs, dtype=torch.float32) * 0.1
         )
 
-        self.reconstructor = nn.Linear(self.K, self.n_inputs, bias=False)
-        self.rule_dropout = nn.Dropout1d(p=dropout_prob)
-
-    def forward(self, x: torch.Tensor, return_recon: bool = False):
+    def forward(self, x: torch.Tensor, return_phi: bool = False):
         # ---- rule firing
         w = self.mf_layer(x)                                  # (B, K)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
         phi = w / w_sum                                       # (B, K) normalized firing
-
-        # keep a clean copy for reconstruction
-        phi_recon = phi
-
-        # dropout for classification path only
-        if self.training and self.dropout_prob > 0:
-            phi = self.rule_dropout(phi)
-            phi = phi / (phi.sum(dim=1, keepdim=True) + 1e-8)
 
         # ---- TS consequents
         weights = self.consequents[:, :-1, :]
@@ -120,11 +110,10 @@ class ANFISAdvanced(nn.Module):
         rule_outputs = linear + bias.unsqueeze(0)
         y = torch.sum(phi.unsqueeze(-1) * rule_outputs, dim=1)
 
-        if not return_recon:
-            return y
+        if return_phi:
+            return y, phi
 
-        x_hat = self.reconstructor(phi_recon)
-        return y, x_hat
+        return y
 
 
 

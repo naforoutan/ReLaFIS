@@ -3,8 +3,6 @@ import pandas as pd
 from sklearn.datasets import make_moons, make_circles, make_swiss_roll, load_iris, load_digits, load_breast_cancer, load_wine
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-#from torchvision.datasets import MNIST
-#from torchvision import transforms
 
 
 def make_swiss_roll_dataset(n_samples=1000, noise=0.1):
@@ -176,6 +174,7 @@ def load_adult_income_dataset():
     df = pd.get_dummies(df, columns=categorical_cols, drop_first=True)
     
     # Encode target: income <=50K -> 0, >50K -> 1
+    df['income'] = df['income'].astype(str).str.strip().str.replace('.', '', regex=False)
     y = df['income'].map({'<=50K': 0, '>50K': 1}).to_numpy(dtype=np.int64)
     
     # Drop target column
@@ -239,7 +238,6 @@ def load_breast_cancer_wisconsin_dataset():
     Breast Cancer Wisconsin (Diagnostic) dataset.
     Binary classification: Malignant (0) vs Benign (1)
     """
-    from sklearn.datasets import load_breast_cancer
     data = load_breast_cancer()
     X = data.data.astype(np.float32)
     y = data.target.astype(np.int64)  # 0=malignant, 1=benign

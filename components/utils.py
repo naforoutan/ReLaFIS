@@ -1,3 +1,4 @@
+from operator import lt
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
@@ -5,7 +6,6 @@ from sklearn.decomposition import PCA
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from components.models import GIFT
-
 
 
 def evaluate_anfis_model(
@@ -314,7 +314,10 @@ def evaluate_anfis_model(
 
 
 
-def plot_gift_memberships(model, X_train, device="cpu"):
+def plot_gift_memberships(model, X_train, device="cpu", grid_res=200):
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
 
     if not hasattr(model, "mf_layer"):
         print("Model has no mf_layer.")
@@ -322,73 +325,86 @@ def plot_gift_memberships(model, X_train, device="cpu"):
 
     mf = model.mf_layer
 
-    if not isinstance(mf, GIFT):
-        print("MF layer is not GIFT.")
+    if not hasattr(mf, "alpha_logits"):
+        print("Not a hierarchical GIFT model.")
         return
 
-    device = torch.device(device)
-    X_train = np.asarray(X_train)
+    model.eval()
 
+    X_np = X_train
+    n_inputs = X_np.shape[1]
     K = mf.K
-    D = mf.n_inputs
 
-    mf.eval()
+    for i in range(K):  # one figure per rule
 
-    for i in range(K):
-        print(f"\n=== Rule {i} ===")
-
-        fig, axes = plt.subplots(1, D, figsize=(5 * D, 4))
-        if D == 1:
+        fig, axes = plt.subplots(1, n_inputs, figsize=(5 * n_inputs, 4))
+        if n_inputs == 1:
             axes = [axes]
 
-        for j in range(D):
+        for j in range(n_inputs):
+            ax = axes[j]
 
-            # ---- get learned parameters
-            center = mf.m[i, j].detach().cpu().item()
-            sigma  = F.softplus(mf.phi[i, j]).detach().cpu().item()
-            slope  = F.softplus(mf.s[i, j]).detach().cpu().item()
+            x_min, x_max = X_np[:, j].min()*2, X_np[:, j].max()*2
+            x_vals = np.linspace(x_min, x_max, grid_res)
 
-            # define x-range around center
-            x_vals = np.linspace(center - 5*sigma,
-                                 center + 5*sigma,
-                                 400)
-
-            x_tensor = torch.tensor(
-                np.tile(center, (len(x_vals), D)),
-                dtype=torch.float32,
-                device=device
-            )
-
+            # vary only dimension j
+            x_tensor = torch.zeros((grid_res, n_inputs), dtype=torch.float32, device=device)
             x_tensor[:, j] = torch.tensor(x_vals, device=device)
 
             with torch.no_grad():
-                w, mu_pos, mu_neg, mu_g, mu_l, mu_r, d, mu_blend = mf(
-                    x_tensor, return_parts=True
-                )
+                outputs = mf(x_tensor, return_parts=True)
 
+            # unpack
+            mu_pos  = outputs[1]
+            mu_neg  = outputs[2]
+            mu_g    = outputs[3]
+            mu_l    = outputs[4]
+
+            mu_sym  = outputs[5]
+            mu_dir  = outputs[6]
+            mu_comb = outputs[7]
+            mu      = outputs[8]
+
+            alpha   = outputs[9]
+            beta    = outputs[10]
+            gamma   = outputs[11]
+            delta   = outputs[12]
+
+            # select rule i, dim j
             mu_pos = mu_pos[:, i, j].cpu().numpy()
             mu_neg = mu_neg[:, i, j].cpu().numpy()
             mu_g   = mu_g[:, i, j].cpu().numpy()
             mu_l   = mu_l[:, i, j].cpu().numpy()
-            mu_r   = mu_r[:, i, j].cpu().numpy()
-            mu_bl  = mu_blend[:, i, j].cpu().numpy()
 
-            ax = axes[j]
+            #mu_sym  = mu_sym[:, i, j].cpu().numpy()
+            #mu_dir  = mu_dir[:, i, j].cpu().numpy()
+            #mu_comb = mu_comb[:, i, j].cpu().numpy()
+            mu      = mu[:, i, j].cpu().numpy()
 
-            ax.plot(x_vals, mu_pos, label="mu+ (Gaussian)")
-            ax.plot(x_vals, mu_neg, label="mu- (Negation)")
-            ax.plot(x_vals, mu_g,   label="mu_g (Greater)")
-            ax.plot(x_vals, mu_l,   label="mu_l (Less)")
-            ax.plot(x_vals, mu_r,   label="mu_r (Relax)")
-            ax.plot(x_vals, mu_bl,  "--", linewidth=3, label="Final μ (GIFT)")
+            alpha_val = torch.sigmoid(alpha[0, i, j]).item()
+            beta_val  = torch.sigmoid(beta[0, i, j]).item()
+            gamma_val = torch.sigmoid(gamma[0, i, j]).item()
+            delta_val = torch.sigmoid(delta[0, i, j]).item()
 
-            ax.axvline(center, linestyle=":", label="center m")
+            # ---- plot per dimension (subplot)
+            ax.plot(x_vals, mu_pos, label="mu_pos")
+            ax.plot(x_vals, mu_neg, label="mu_neg")
 
-            ax.set_title(f"Feature {j}")
-            ax.set_ylim(-0.05, 1.05)
+            ax.plot(x_vals, mu_g, label="mu_g")
+            ax.plot(x_vals, mu_l, label="mu_l")
+
+            #ax.plot(x_vals, mu_sym, "--", label=f"mu_sym α={alpha_val:.2f}")
+            #ax.plot(x_vals, mu_dir, "--", label=f"mu_dir β={beta_val:.2f}")
+
+            #ax.plot(x_vals, mu_comb, label=f"mu_comb γ={gamma_val:.2f}")
+            ax.plot(x_vals, mu, "--", label=f"final μ δ={delta_val:.2f}", linewidth=2)
+
+            ax.set_title(f"Rule {i}, Dim {j}")
+            ax.set_xlabel(f"x[{j}]")
+            ax.set_ylabel("Membership")
             ax.grid(True)
+            ax.legend()
 
-        plt.suptitle(f"GIFT Memberships | Rule {i}")
-        plt.legend()
         plt.tight_layout()
         plt.show()
+
