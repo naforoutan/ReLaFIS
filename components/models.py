@@ -5,7 +5,6 @@ import skfuzzy as fuzz
 
 from .membership import SimpleGaussianMF, GIFT
 
-
 def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, maxiter: int = 2000):
     X_t = X.T
     cntr, u, _, _, _, _, _ = fuzz.cluster.cmeans(
