@@ -1,9 +1,10 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import skfuzzy as fuzz 
+import skfuzzy as fuzz
 
 from .membership import SimpleGaussianMF, GIFT
+
 
 def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, maxiter: int = 2000):
     X_t = X.T
@@ -28,7 +29,7 @@ def fcm_initialize(X: np.ndarray, K: int, m: float = 2.0, error: float = 1e-5, m
     return np.array(cntr, dtype=np.float32), np.array(spreads, dtype=np.float32)
 
 
-def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", seed=42):
+def init_mf_params(X_train, K, method="fcm", s_mode="alpha_beta", seed=42):
     np.random.seed(seed)
 
     if isinstance(X_train, torch.Tensor):
@@ -37,16 +38,18 @@ def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", see
     n_features = X_train.shape[1]
 
     if method == "fcm":
-        centers, spreads = fcm_initialize(X_train, K)  # your FCM function
+        centers, spreads = fcm_initialize(X_train, K)
     elif method == "random_uniform":
-        # Uniformly distributed centers in the range of X_train
         if isinstance(X_train, torch.Tensor):
             X_train = X_train.detach().cpu().numpy()
         X_min = X_train.min(axis=0, keepdims=True)
         X_max = X_train.max(axis=0, keepdims=True)
         centers = np.random.uniform(X_min, X_max, size=(K, n_features)).astype(np.float32)
-        # Large spreads uniformly sampled to cover wide area
-        spreads = np.random.uniform(0.5*scale, 1.5*scale, size=(K, n_features)).astype(np.float32)
+        # use per-feature std instead of fixed scale=1.0
+        data_std = X_train.std(axis=0, keepdims=True).clip(min=1e-6)
+        spreads = np.random.uniform(
+            0.5 * data_std, 1.5 * data_std, size=(K, n_features)
+        ).astype(np.float32)
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -54,7 +57,7 @@ def init_mf_params(X_train, K, method="fcm", scale=1.0, s_mode="alpha_beta", see
 
 
 class ANFISSimple(nn.Module):
-    """Takagi–Sugeno ANFIS with Gaussian MFs (simple FCM init)."""
+    """Takagi-Sugeno ANFIS with Gaussian MFs (simple FCM init)."""
 
     def __init__(self, centers_init, spreads_init, n_outputs: int = 1):
         super().__init__()
@@ -97,12 +100,10 @@ class ANFISAdvanced(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, return_phi: bool = False):
-        # ---- rule firing
-        w = self.mf_layer(x)                                  # (B, K)
+        w = self.mf_layer(x)    # (B, K)
         w_sum = torch.sum(w, dim=1, keepdim=True) + 1e-8
-        phi = w / w_sum                                       # (B, K) normalized firing
+        phi = w / w_sum         # (B, K) normalized firing
 
-        # ---- TS consequents
         weights = self.consequents[:, :-1, :]
         bias = self.consequents[:, -1, :]
         linear = torch.einsum("bi,kio->bko", x, weights)
@@ -115,11 +116,13 @@ class ANFISAdvanced(nn.Module):
         return y
 
 
-
-def create_anfis_model(mf_type, centers_init, spreads_init, n_outputs=1, s_mode="alpha_beta"):
+def create_anfis_model(mf_type, centers_init, spreads_init,
+                       n_outputs=1, s_mode="alpha_beta",
+                       output_range=(-1.0, 1.0)):
     if mf_type == "simple":
         return ANFISSimple(centers_init, spreads_init, n_outputs=n_outputs)
     elif mf_type == "advanced":
-        return ANFISAdvanced(centers_init, spreads_init, s_mode=s_mode, n_outputs=n_outputs)
+        return ANFISAdvanced(centers_init, spreads_init,
+                             s_mode=s_mode, n_outputs=n_outputs)
     else:
         raise ValueError(f"Unknown mf_type: {mf_type}")
