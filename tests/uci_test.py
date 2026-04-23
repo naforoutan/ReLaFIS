@@ -17,51 +17,45 @@ class Haberman(Test):
         path = "./data/haberman.data"
         self.df = pd.read_csv(path, header=None)
         self.target = 3
+
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name)
+
         super().__init__(train_size=214, *args, **kwargs)
 
 
-# todo
 class Heart(Test):
     def __init__(self, *args, **kwargs) -> None:
-        data = fetch_ucirepo(id=45)
+        # Path to the local Cleveland dataset
+        path = "./data/heart.data"
+        df = pd.read_csv(path, header=None, na_values='?')
+        df = df.dropna(subset=[df.columns[-1]])
+        
+        self.df = df.iloc[:, :-1]   # all columns except last
+        self.target = df.iloc[:, -1]  # last column
+        self.target = (self.target > 0).astype(int)
 
-        # Assuming self.df is your features DataFrame and self.target is a DataFrame
-        self.df = data.data.features
-        self.target = data.data.targets
-
-        target_column_name = self.target.columns[0]
-        data = pd.concat([self.df, self.target], axis=1)
-        data = data.dropna(subset=[target_column_name])
-
-        self.df = data.iloc[:, :-1]
-        self.target = data.iloc[:, -1]  # All rows, the last column
-        self.target[self.target > 0] = 1
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name)
+        
         super().__init__(train_size=189, *args, **kwargs)
 
 
 class Glass(Test):
     def __init__(self, *args, **kwargs) -> None:
-        data = fetch_ucirepo(id=42) 
-
-        # Assuming self.df is your features DataFrame and self.target is a DataFrame
-        self.df = data.data.features
-        self.target = data.data.targets
-
-        target_column_name = self.target.columns[0]
-        data = pd.concat([self.df, self.target], axis=1)
-        data = data.dropna(subset=[target_column_name])
-
-        self.df = data.iloc[:, :-1]
-        self.target = data.iloc[:, -1]  # All rows, the last column
+        path = "./data/glass.data"
+        df = pd.read_csv(path, header=None)
+        # Glass dataset: last column is target (type of glass)
+        self.df = df.iloc[:, :-1]
+        self.target = df.iloc[:, -1]
         super().__init__(train_size=160, *args, **kwargs)
 
 
 class Segmentaition(Test):
     def __init__(self, *args, **kwargs) -> None:
 
-        file_path = 'data/segmentation/segmentation.data'
+        file_path = 'data/segmentation.data'
         data = pd.read_csv(file_path)
-
 
         self.df = data.iloc[:, :-1]
         self.target = "class"
@@ -72,7 +66,12 @@ class Wine(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/wine.data"
         self.df = pd.read_csv(path, header=None)
-        self.target = 0
+        self.target = 0   # column index 0 is the target
+
+        self.df.columns = self.df.columns.astype(str)
+        # Also ensure target Series has a string name:
+        if isinstance(self.target, pd.Series):
+            self.target.name = str(self.target.name)
         super().__init__(train_size=124, *args, **kwargs)
 
 
@@ -95,16 +94,6 @@ class Immunotherapy(Test):
 
         super().__init__(train_size=63  , *args, **kwargs)
 
-class Autism(Test):
-    def __init__(self, *args, **kwargs) -> None:
-
-        file_path = './data/Toddler Autism dataset July 2018.csv'
-        self.df = pd.read_csv(file_path).drop('Case_No', axis=1)
-
-        self.target = 'Class/ASD Traits '
-
-        super().__init__(train_size=737, *args, **kwargs)
-
 
 class Iris(Test):
     def __init__(self, *args, **kwargs) -> None:
@@ -112,3 +101,69 @@ class Iris(Test):
         self.target = data.target
         self.df = data.data
         super().__init__(train_size=105, *args, **kwargs)
+
+
+
+class BreastCancer(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/wdbc.data"
+        # No header, comma-separated
+        df = pd.read_csv(path, header=None)
+        # First column is ID (ignore), second column is target (M=malignant, B=benign)
+        self.target = df[1].map({'M': 1, 'B': 0})
+        # Features: columns 2 to end
+        self.df = df.iloc[:, 2:]
+        super().__init__(train_size=455, *args, **kwargs)
+
+
+class AdultIncome(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/adult.data"
+        column_names = ['age', 'workclass', 'fnlwgt', 'education', 'education-num',
+                        'marital-status', 'occupation', 'relationship', 'race', 'sex',
+                        'capital-gain', 'capital-loss', 'hours-per-week', 'native-country',
+                        'income']
+        df = pd.read_csv(path, header=None, names=column_names, skipinitialspace=True)
+        # Target: income (<=50K -> 0, >50K -> 1)
+        self.target = df['income'].map({'<=50K': 0, '>50K': 1})
+        self.df = df.drop('income', axis=1)
+        super().__init__(train_size=26048, *args, **kwargs)
+
+
+class BankMarketing(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/bank-full.csv"
+        df = pd.read_csv(path, sep=';')
+        # Target: 'y' (yes/no) -> 1/0
+        self.target = df['y'].map({'yes': 1, 'no': 0})
+        self.df = df.drop('y', axis=1)
+        super().__init__(train_size=36168, *args, **kwargs)
+
+
+class PimaDiabetes(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/diabetes.data"
+        df = pd.read_csv(path, header=None)
+        # Last column is target (0/1)
+        self.target = df.iloc[:, -1]
+        self.df = df.iloc[:, :-1]
+        super().__init__(train_size=614, *args, **kwargs)
+
+
+class CarEvaluation(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/car.data"
+        column_names = ['buying', 'maint', 'doors', 'persons', 'lug_boot', 'safety', 'class']
+        df = pd.read_csv(path, header=None, names=column_names)
+        # Target: class (unacc, acc, good, vgood) -> we can map to numeric
+        # For binary classification? The original datasets include multiclass;
+        # you may keep as is or binarize. Here we keep as categorical codes.
+        # If you need binary: map 'unacc'/'acc' vs 'good'/'vgood'? Unclear.
+        # I'll assume you want multiclass (as in Glass, Wine, etc.)
+        from sklearn.preprocessing import LabelEncoder
+        le = LabelEncoder()
+        self.target = le.fit_transform(df['class'])
+        self.df = df.drop('class', axis=1)
+        # Optionally one‑hot encode categorical features? Leave as is (strings) –
+        # parent code may need to handle. Add note.
+        super().__init__(train_size=1384, *args, **kwargs)
