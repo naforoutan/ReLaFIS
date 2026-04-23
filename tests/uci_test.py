@@ -6,7 +6,7 @@ from ucimlrepo import fetch_ucirepo
 
 class Cryotheraphy(Test):
     def __init__(self, *args, **kwargs) -> None:
-        file_path = './data/cryotherapy/Cryotherapy.xlsx'
+        file_path = './data/Cryotherapy.xlsx'
         self.df = pd.read_excel(file_path)
         self.target = 'Result_of_Treatment'
         super().__init__(train_size=63, *args, **kwargs)
@@ -14,12 +14,13 @@ class Cryotheraphy(Test):
 
 class Haberman(Test):
     def __init__(self, *args, **kwargs) -> None:
-        path = "./data/haberman/haberman.data"
+        path = "./data/haberman.data"
         self.df = pd.read_csv(path, header=None)
         self.target = 3
         super().__init__(train_size=214, *args, **kwargs)
 
 
+# todo
 class Heart(Test):
     def __init__(self, *args, **kwargs) -> None:
         data = fetch_ucirepo(id=45)
@@ -54,6 +55,7 @@ class Glass(Test):
         self.target = data.iloc[:, -1]  # All rows, the last column
         super().__init__(train_size=160, *args, **kwargs)
 
+
 class Segmentaition(Test):
     def __init__(self, *args, **kwargs) -> None:
 
@@ -85,7 +87,7 @@ class Thyroid(Test):
 class Immunotherapy(Test):
     def __init__(self, *args, **kwargs) -> None:
 
-        file_path = './data/immunotherapy/Immunotherapy.xlsx'
+        file_path = './data/Immunotherapy.xlsx'
         data = pd.read_excel(file_path)
 
         self.df = data.drop('Result_of_Treatment', axis=1)
@@ -96,7 +98,7 @@ class Immunotherapy(Test):
 class Autism(Test):
     def __init__(self, *args, **kwargs) -> None:
 
-        file_path = './data/Autism/Toddler Autism dataset July 2018.csv'
+        file_path = './data/Toddler Autism dataset July 2018.csv'
         self.df = pd.read_csv(file_path).drop('Case_No', axis=1)
 
         self.target = 'Class/ASD Traits '
