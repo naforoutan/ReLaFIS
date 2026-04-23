@@ -15,12 +15,14 @@ class Cryotheraphy(Test):
 class Haberman(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/haberman.data"
-        self.df = pd.read_csv(path, header=None)
-        self.target = 3
-
+        df = pd.read_csv(path, header=None)
+        
+        self.target = df[3]           # This is a pandas Series
+        self.df = df.drop(columns=[3])  # Remove target from features
+        
         self.df.columns = self.df.columns.astype(str)
         self.target.name = str(self.target.name)
-
+        
         super().__init__(train_size=214, *args, **kwargs)
 
 
@@ -45,21 +47,47 @@ class Glass(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/glass.data"
         df = pd.read_csv(path, header=None)
-        # Glass dataset: last column is target (type of glass)
+
         self.df = df.iloc[:, :-1]
         self.target = df.iloc[:, -1]
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name)
+        
         super().__init__(train_size=160, *args, **kwargs)
 
 
 class Segmentaition(Test):
     def __init__(self, *args, **kwargs) -> None:
-
         file_path = 'data/segmentation.data'
-        data = pd.read_csv(file_path)
-
-        self.df = data.iloc[:, :-1]
-        self.target = "class"
-        super().__init__(train_size=1500, *args, **kwargs)
+        
+        data = pd.read_csv(
+            file_path,
+            sep=',',
+            header=None,
+            comment=';',          # skip comment lines starting with ';'
+            skip_blank_lines=True,
+            engine='python'
+        )
+        
+        self.target = data[0]
+        self.df = data.iloc[:, 1:]
+        
+        before = len(self.df)
+        self.df = self.df.dropna()
+        self.target = self.target.loc[self.df.index]
+        after = len(self.df)
+        if after < before:
+            print(f"Dropped {before - after} rows with missing values.")
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'class'
+        
+        actual_size = len(self.df)
+        train_size = int(actual_size * 0.8)   # 80% of data
+        kwargs['train_size'] = train_size
+        
+        super().__init__(*args, **kwargs)
 
 
 class Wine(Test):
@@ -107,12 +135,14 @@ class Iris(Test):
 class BreastCancer(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/wdbc.data"
-        # No header, comma-separated
         df = pd.read_csv(path, header=None)
-        # First column is ID (ignore), second column is target (M=malignant, B=benign)
+
         self.target = df[1].map({'M': 1, 'B': 0})
-        # Features: columns 2 to end
         self.df = df.iloc[:, 2:]
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name) if self.target.name is not None else 'target'
+        
         super().__init__(train_size=455, *args, **kwargs)
 
 
@@ -124,29 +154,61 @@ class AdultIncome(Test):
                         'capital-gain', 'capital-loss', 'hours-per-week', 'native-country',
                         'income']
         df = pd.read_csv(path, header=None, names=column_names, skipinitialspace=True)
-        # Target: income (<=50K -> 0, >50K -> 1)
+        
         self.target = df['income'].map({'<=50K': 0, '>50K': 1})
-        self.df = df.drop('income', axis=1)
-        super().__init__(train_size=26048, *args, **kwargs)
+        
+        self.target = self.target.dropna()
+        self.df = df.loc[self.target.index].drop('income', axis=1)
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'income'
+        
+        actual_n = len(self.df)
+        train_size = kwargs.get('train_size', 26048)
+        if train_size > actual_n:
+            train_size = int(actual_n * 0.8)   # fallback to 80% of data
+            print(f"Note: requested train_size=26048 exceeds data size {actual_n}; using {train_size} instead.")
+        kwargs['train_size'] = train_size
+        
+        super().__init__(*args, **kwargs)
 
 
 class BankMarketing(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/bank-full.csv"
-        df = pd.read_csv(path, sep=';')
-        # Target: 'y' (yes/no) -> 1/0
-        self.target = df['y'].map({'yes': 1, 'no': 0})
-        self.df = df.drop('y', axis=1)
-        super().__init__(train_size=36168, *args, **kwargs)
+        df = pd.read_csv(path, sep=',', header=0)
+        
+        self.target = df['Target'].map({'yes': 1, 'no': 0})
+        self.df = df.drop('Target', axis=1)
+        
+        self.target = self.target.dropna()
+        self.df = self.df.loc[self.target.index]
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'Target'
+        
+        actual_n = len(self.df)
+        train_size = kwargs.get('train_size', 36168)
+        if train_size > actual_n:
+            train_size = int(actual_n * 0.8)
+            print(f"Note: requested train_size=36168 exceeds data size {actual_n}; using {train_size} instead.")
+        kwargs['train_size'] = train_size
+        
+        super().__init__(*args, **kwargs)
+
 
 
 class PimaDiabetes(Test):
     def __init__(self, *args, **kwargs) -> None:
         path = "./data/diabetes.data"
         df = pd.read_csv(path, header=None)
-        # Last column is target (0/1)
-        self.target = df.iloc[:, -1]
-        self.df = df.iloc[:, :-1]
+
+        self.target = df.iloc[:, -1]      # pandas Series
+        self.df = df.iloc[:, :-1]         # features
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name) if self.target.name is not None else 'target'
+        
         super().__init__(train_size=614, *args, **kwargs)
 
 
