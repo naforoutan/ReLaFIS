@@ -49,8 +49,7 @@ class GIFT(nn.Module):
             (in_features, rules), **factory_kwargs))
         self.temp = nn.Parameter(torch.randn(
             (in_features, rules), **factory_kwargs) * 0.1)
-        self.combination_weights = nn.Parameter(torch.randn(
-            (in_features, rules, 2), **factory_kwargs))  # 2 branches: pos_neg and great_less
+        self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1) 
         
         # Relaxation parameters
         self.relax = nn.Parameter(torch.zeros((in_features, rules), **factory_kwargs))
@@ -94,16 +93,10 @@ class GIFT(nn.Module):
         temp = self.sigmoid(self.temp)
         mu_great_less = (mu_greater * temp) + (1 - mu_greater) * (1 - temp)
 
-        # Learnable weighted combination using softmax
-        # combination_weights shape: (batch, in_features, rules, 2)
-        weights = self.combination_weights  # (in_features, rules, 2)
-        weights = weights.view(1, *weights.shape)  # (1, in_features, rules, 2)
-        
-        weights = F.softmax(weights, dim=-1)  # (1, in_features, rules, 2)
-        weight_pos_neg = weights[..., 0]  # (1, in_features, rules)
-        weight_great_less = weights[..., 1]  # (1, in_features, rules)
-        
-        mu = (weight_pos_neg * mu_pos_neg) + (weight_great_less * mu_great_less)
+
+        weight = torch.sigmoid(self.comb_weight)            # (in_features, rules)
+        weight = weight.unsqueeze(0)                        # (1, in_features, rules)
+        mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
 
         # Relaxation
@@ -139,19 +132,14 @@ class GIFT(nn.Module):
 
 
 class MamdaniGIFT(GIFT):
-    """
-    Mamdani version of GIFT model
-    """
-    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
-        super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
+                 zeta: float, drop_out_p=0.5, device=None, dtype=None):
+        super().__init__(in_features, rules, out_features, binary, zeta, drop_out_p, device, dtype)
     
         factory_kwargs = {'device': device, 'dtype': dtype}
-
         if binary:
             self.out_features = out_features = 1
-
-        self.mamdani_linear = nn.Linear(
-            in_features=rules, out_features=out_features, bias=True, **factory_kwargs)
+        self.mamdani_linear = nn.Linear(rules, out_features, bias=True, **factory_kwargs)
 
     def mamdani(self, y):
         return self.mamdani_linear(y)
@@ -241,3 +229,4 @@ class SklearnGIFTWrapper(BaseEstimator, ClassifierMixin):
 
     def set_params(self, **parameters):
         return self
+    
