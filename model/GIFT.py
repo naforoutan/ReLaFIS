@@ -12,7 +12,7 @@ class GIFT(nn.Module):
     GIFT: Gaussian with Integrated Fuzzy Transformation
     Uses sigmoid for "greater than mu" and its negation for "less than mu"
     """
-    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, zeta: float, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
 
@@ -28,6 +28,7 @@ class GIFT(nn.Module):
         self.drop_out_p = drop_out_p
 
         self.device = device
+        self.zeta = zeta  
 
         self.mean = nn.Parameter(torch.rand(
             (in_features, rules), **factory_kwargs))
@@ -44,18 +45,17 @@ class GIFT(nn.Module):
         self.sigmoid = nn.Sigmoid()
         self.drop_out = nn.Dropout(p=drop_out_p)
 
-        # Parameters for GIFT branches
         self.sigmoid_slope = nn.Parameter(torch.ones(
             (in_features, rules), **factory_kwargs))
-        
-        # Parameter for the greater/less branch (similar to literal)
         self.temp = nn.Parameter(torch.randn(
             (in_features, rules), **factory_kwargs) * 0.1)
-        
-        # Learnable parameters for combining the two branches
-        # These will determine the weight/importance of each branch
         self.combination_weights = nn.Parameter(torch.randn(
             (in_features, rules, 2), **factory_kwargs))  # 2 branches: pos_neg and great_less
+        
+        # Relaxation parameters
+        self.relax = nn.Parameter(torch.zeros((in_features, rules), **factory_kwargs))
+        self.tsk_gate = nn.Parameter(torch.zeros((rules, out_features), **factory_kwargs))
+        self.tsk_zeta = zeta   # re‑use the same scaling factor for both relaxations
 
     def forward(self, X):
         y = self.encode(X)
@@ -104,6 +104,12 @@ class GIFT(nn.Module):
         weight_great_less = weights[..., 1]  # (1, in_features, rules)
         
         mu = (weight_pos_neg * mu_pos_neg) + (weight_great_less * mu_great_less)
+
+
+        # Relaxation
+        relaxer = self.sigmoid(self.relax * self.zeta)     # (in_features, rules)
+        relaxer = relaxer.unsqueeze(0)                     # (1, in_features, rules)
+        mu = relaxer + (1 - relaxer) * mu                  # push mu towards 1 when relaxer is high
         
         epsilon = 1e-10
         y = torch.log(mu + epsilon)
@@ -117,9 +123,17 @@ class GIFT(nn.Module):
         return y
 
     def tsk(self, X, y):
-        X = self.tsk_linear(X)
-        X = X.reshape(-1, self.rules_count, self.out_features)
-        y = y.reshape(-1, self.rules_count, 1)
+        # Linear projection of inputs
+        X = self.tsk_linear(X)                         # (b, rules*out)
+        X = X.reshape(-1, self.rules_count, self.out_features)   # (b, r, o)
+        
+        # Relaxation on the consequent
+        gate = torch.sigmoid(self.tsk_gate * self.tsk_zeta)   # (r, o)
+        gate = gate.unsqueeze(0)                               # (1, r, o)
+        X = X * (1 - gate)                                     # gate small -> keep X, gate large -> shrink X
+        
+        # Multiply by rule activations and sum
+        y = y.reshape(-1, self.rules_count, 1)                 # (b, r, 1)
         X = X * y
         return X.sum(dim=1)
 

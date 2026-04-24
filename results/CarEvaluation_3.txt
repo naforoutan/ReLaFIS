@@ -1,0 +1,39 @@
+Experiment Result CarEvaluation
+------ train ------
+              precision    recall  f1-score   support
+
+           0     0.9432    0.9708    0.9568       308
+           1     0.9444    0.9273    0.9358        55
+           2     0.9938    0.9856    0.9896       969
+           3     0.9808    0.9808    0.9808        52
+
+    accuracy                         0.9798      1384
+   macro avg     0.9655    0.9661    0.9657      1384
+weighted avg     0.9801    0.9798    0.9799      1384
+AUC	0.9990858383323634
+------ test ------
+              precision    recall  f1-score   support
+
+           0     0.8929    0.9868    0.9375        76
+           1     0.9231    0.8571    0.8889        14
+           2     1.0000    0.9751    0.9874       241
+           3     1.0000    0.9231    0.9600        13
+
+    accuracy                         0.9709       344
+   macro avg     0.9540    0.9355    0.9434       344
+weighted avg     0.9732    0.9709    0.9713       344
+AUC	0.9976843837626022
+{'binary': False,
+ 'drop_out_p': 0.3,
+ 'in_features': 21,
+ 'out_features': 4,
+ 'rules': 3,
+ 'zeta': 1}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 1384}
