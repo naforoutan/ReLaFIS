@@ -1,0 +1,36 @@
+Experiment Result Thyroid
+------ train ------
+              precision    recall  f1-score   support
+
+           0     0.9375    1.0000    0.9677       105
+           1     1.0000    0.8750    0.9333        24
+           2     1.0000    0.8095    0.8947        21
+
+    accuracy                         0.9533       150
+   macro avg     0.9792    0.8948    0.9319       150
+weighted avg     0.9563    0.9533    0.9520       150
+AUC	0.9974006398425003
+------ test ------
+              precision    recall  f1-score   support
+
+           0     0.9184    1.0000    0.9574        45
+           1     1.0000    0.8182    0.9000        11
+           2     1.0000    0.7778    0.8750         9
+
+    accuracy                         0.9385        65
+   macro avg     0.9728    0.8653    0.9108        65
+weighted avg     0.9435    0.9385    0.9363        65
+AUC	0.9988888888888888
+{'binary': False,
+ 'drop_out_p': 0.3,
+ 'in_features': 5,
+ 'out_features': 3,
+ 'rules': 2}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 150}
