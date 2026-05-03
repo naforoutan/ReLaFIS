@@ -2,13 +2,13 @@ Experiment Result Haberman
 ------ train ------
               precision    recall  f1-score   support
 
-           0     0.7732    0.9554    0.8547       157
-           1     0.6500    0.2281    0.3377        57
+           0     0.7665    0.9618    0.8531       157
+           1     0.6471    0.1930    0.2973        57
 
-    accuracy                         0.7617       214
-   macro avg     0.7116    0.5917    0.5962       214
-weighted avg     0.7404    0.7617    0.7170       214
-AUC	0.7186277796401833
+    accuracy                         0.7570       214
+   macro avg     0.7068    0.5774    0.5752       214
+weighted avg     0.7347    0.7570    0.7051       214
+AUC	0.732148843446195
 ------ test ------
               precision    recall  f1-score   support
 
@@ -18,12 +18,12 @@ AUC	0.7186277796401833
     accuracy                         0.7174        92
    macro avg     0.5388    0.5123    0.4823        92
 weighted avg     0.6370    0.7174    0.6491        92
-AUC	0.6439950980392156
+AUC	0.6372549019607843
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 3,
  'out_features': 2,
- 'rules': 2}
+ 'rules': 6}
 {'alpha': 1.0,
  'batch_size': 32,
  'epochs': 100,

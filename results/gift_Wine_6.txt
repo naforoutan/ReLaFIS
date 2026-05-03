@@ -1,0 +1,36 @@
+Experiment Result Wine
+------ train ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000        41
+           1     1.0000    1.0000    1.0000        50
+           2     1.0000    1.0000    1.0000        33
+
+    accuracy                         1.0000       124
+   macro avg     1.0000    1.0000    1.0000       124
+weighted avg     1.0000    1.0000    1.0000       124
+AUC	1.0
+------ test ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000        18
+           1     1.0000    0.9524    0.9756        21
+           2     0.9375    1.0000    0.9677        15
+
+    accuracy                         0.9815        54
+   macro avg     0.9792    0.9841    0.9811        54
+weighted avg     0.9826    0.9815    0.9816        54
+AUC	0.9995189995189996
+{'binary': False,
+ 'drop_out_p': 0.3,
+ 'in_features': 13,
+ 'out_features': 3,
+ 'rules': 6}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 124}

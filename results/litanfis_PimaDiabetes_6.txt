@@ -1,0 +1,34 @@
+Experiment Result PimaDiabetes
+------ train ------
+              precision    recall  f1-score   support
+
+           0     0.7946    0.8900    0.8396       400
+           1     0.7349    0.5701    0.6421       214
+
+    accuracy                         0.7785       614
+   macro avg     0.7648    0.7300    0.7409       614
+weighted avg     0.7738    0.7785    0.7708       614
+AUC	0.8509813084112149
+------ test ------
+              precision    recall  f1-score   support
+
+           0     0.7739    0.8900    0.8279       100
+           1     0.7179    0.5185    0.6022        54
+
+    accuracy                         0.7597       154
+   macro avg     0.7459    0.7043    0.7150       154
+weighted avg     0.7543    0.7597    0.7487       154
+AUC	0.8205555555555555
+{'binary': True,
+ 'drop_out_p': 0.3,
+ 'in_features': 8,
+ 'out_features': 2,
+ 'rules': 6}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 614}

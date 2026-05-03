@@ -1,0 +1,34 @@
+Experiment Result AdultIncome
+------ train ------
+              precision    recall  f1-score   support
+
+         0.0     0.8899    0.9252    0.9072      1537
+         1.0     0.7416    0.6522    0.6940       506
+
+    accuracy                         0.8576      2043
+   macro avg     0.8157    0.7887    0.8006      2043
+weighted avg     0.8531    0.8576    0.8544      2043
+AUC	0.911909396931037
+------ test ------
+              precision    recall  f1-score   support
+
+         0.0     0.8861    0.9323    0.9086       384
+         1.0     0.7570    0.6378    0.6923       127
+
+    accuracy                         0.8591       511
+   macro avg     0.8216    0.7850    0.8005       511
+weighted avg     0.8540    0.8591    0.8549       511
+AUC	0.9123195538057742
+{'binary': True,
+ 'drop_out_p': 0.3,
+ 'in_features': 65,
+ 'out_features': 2,
+ 'rules': 2}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 2043}

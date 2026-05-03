@@ -8,22 +8,22 @@ Experiment Result PimaDiabetes
     accuracy                         0.7915       614
    macro avg     0.7796    0.7466    0.7575       614
 weighted avg     0.7877    0.7915    0.7850       614
-AUC	0.8579672897196262
+AUC	0.8604439252336449
 ------ test ------
               precision    recall  f1-score   support
 
-           0     0.7807    0.8900    0.8318       100
-           1     0.7250    0.5370    0.6170        54
+           0     0.7965    0.9000    0.8451       100
+           1     0.7561    0.5741    0.6526        54
 
-    accuracy                         0.7662       154
-   macro avg     0.7529    0.7135    0.7244       154
-weighted avg     0.7612    0.7662    0.7565       154
-AUC	0.825
+    accuracy                         0.7857       154
+   macro avg     0.7763    0.7370    0.7489       154
+weighted avg     0.7823    0.7857    0.7776       154
+AUC	0.8240740740740741
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 8,
  'out_features': 2,
- 'rules': 2}
+ 'rules': 6}
 {'alpha': 1.0,
  'batch_size': 32,
  'epochs': 100,

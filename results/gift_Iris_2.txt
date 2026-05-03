@@ -1,0 +1,36 @@
+Experiment Result Iris
+------ train ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000        35
+           1     0.9375    0.8571    0.8955        35
+           2     0.8684    0.9429    0.9041        35
+
+    accuracy                         0.9333       105
+   macro avg     0.9353    0.9333    0.9332       105
+weighted avg     0.9353    0.9333    0.9332       105
+AUC	0.983673469387755
+------ test ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000        15
+           1     0.8571    0.8000    0.8276        15
+           2     0.8125    0.8667    0.8387        15
+
+    accuracy                         0.8889        45
+   macro avg     0.8899    0.8889    0.8888        45
+weighted avg     0.8899    0.8889    0.8888        45
+AUC	0.9785185185185186
+{'binary': False,
+ 'drop_out_p': 0.3,
+ 'in_features': 4,
+ 'out_features': 3,
+ 'rules': 2}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 105}

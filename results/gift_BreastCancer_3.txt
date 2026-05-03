@@ -8,7 +8,7 @@ Experiment Result BreastCancer
     accuracy                         0.9868       455
    macro avg     0.9883    0.9835    0.9858       455
 weighted avg     0.9869    0.9868    0.9868       455
-AUC	0.9962641898864808
+AUC	0.9968008255933953
 ------ test ------
               precision    recall  f1-score   support
 
@@ -18,12 +18,12 @@ AUC	0.9962641898864808
     accuracy                         0.9737       114
    macro avg     0.9697    0.9742    0.9719       114
 weighted avg     0.9740    0.9737    0.9737       114
-AUC	0.9970238095238095
+AUC	0.9950396825396826
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 30,
  'out_features': 2,
- 'rules': 2}
+ 'rules': 3}
 {'alpha': 1.0,
  'batch_size': 32,
  'epochs': 100,

@@ -104,7 +104,6 @@ class GIFT(nn.Module):
         relaxer = relaxer.unsqueeze(0)                     # (1, in_features, rules)
         mu = relaxer + (1 - relaxer) * mu                  # push mu towards 1 when relaxer is high
         
-        
         epsilon = 1e-10
         y = torch.log(mu + epsilon)
 
