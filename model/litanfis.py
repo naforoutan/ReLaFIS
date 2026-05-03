@@ -89,7 +89,19 @@ class LitAnfis(nn.Module):
         X = X * y
 
         return X.sum(dim=1)
+    
+    def get_interpretable_params(self):
+        with torch.no_grad():
+            literal = torch.sigmoid(self.literal)                 # (in_features, rules)
 
+            stats = {
+                "literal_mean": literal.mean().item(),
+                "literal_std": literal.std().item(),
+                "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
+                "literal_matrix": literal.cpu().numpy(),          # shape (in_features, rules)
+            }
+        return stats
+    
 
 class MamdaniLitAnfis(LitAnfis):
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
