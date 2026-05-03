@@ -7,12 +7,12 @@ from sklearn.metrics import accuracy_score
 import pandas as pd
 
 
-class GIFT(nn.Module):
+class GIFTRELAX(nn.Module):
     """
     GIFT: Gaussian with Integrated Fuzzy Transformation
     Uses sigmoid for "greater than mu" and its negation for "less than mu"
     """
-    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, zeta: float, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
 
@@ -28,6 +28,7 @@ class GIFT(nn.Module):
         self.drop_out_p = drop_out_p
 
         self.device = device
+        self.zeta = zeta  
 
         self.mean = nn.Parameter(torch.rand(
             (in_features, rules), **factory_kwargs))
@@ -50,6 +51,10 @@ class GIFT(nn.Module):
             (in_features, rules), **factory_kwargs) * 0.1)
         self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1) 
         
+        # Relaxation parameters
+        self.relax = nn.Parameter(torch.zeros((in_features, rules), **factory_kwargs))
+        self.tsk_gate = nn.Parameter(torch.zeros((rules, out_features), **factory_kwargs))
+        self.tsk_zeta = zeta   # re‑use the same scaling factor for both relaxations
 
     def forward(self, X):
         y = self.encode(X)
@@ -93,6 +98,11 @@ class GIFT(nn.Module):
         weight = weight.unsqueeze(0)                        # (1, in_features, rules)
         mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
+
+        # Relaxation
+        relaxer = self.sigmoid(self.relax * self.zeta)     # (in_features, rules)
+        relaxer = relaxer.unsqueeze(0)                     # (1, in_features, rules)
+        mu = relaxer + (1 - relaxer) * mu                  # push mu towards 1 when relaxer is high
         
         epsilon = 1e-10
         y = torch.log(mu + epsilon)
@@ -110,6 +120,11 @@ class GIFT(nn.Module):
         X = self.tsk_linear(X)                         # (b, rules*out)
         X = X.reshape(-1, self.rules_count, self.out_features)   # (b, r, o)
         
+        # Relaxation on the consequent
+        gate = torch.sigmoid(self.tsk_gate * self.tsk_zeta)   # (r, o)
+        gate = gate.unsqueeze(0)                               # (1, r, o)
+        X = X * (1 - gate)                                     # gate small -> keep X, gate large -> shrink X
+        
         # Multiply by rule activations and sum
         y = y.reshape(-1, self.rules_count, 1)                 # (b, r, 1)
         X = X * y
@@ -121,6 +136,7 @@ class GIFT(nn.Module):
             literal = torch.sigmoid(self.literal)
             temp = torch.sigmoid(self.temp)
             weight = torch.sigmoid(self.comb_weight)
+            relax = torch.sigmoid(self.relax * self.zeta)
 
             stats = {
                 "literal_mean": literal.mean().item(),
@@ -132,20 +148,23 @@ class GIFT(nn.Module):
                 "weight_mean": weight.mean().item(),
                 "weight_std": weight.std().item(),
 
+                "relax_mean": relax.mean().item(),
+                "relax_std": relax.std().item(),
 
                 # saturation indicators (very important)
                 "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
                 "temp_saturation": ((temp < 0.1) | (temp > 0.9)).float().mean().item(),
                 "weight_saturation": ((weight < 0.1) | (weight > 0.9)).float().mean().item(),
+                "relax_saturation": ((relax > 0.9)).float().mean().item(),
             }
 
         return stats
 
 
-class MamdaniGIFT(GIFT):
+class MamdaniGIFTRELAX(GIFTRELAX):
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
-                 drop_out_p=0.5, device=None, dtype=None):
-        super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
+                 zeta: float, drop_out_p=0.5, device=None, dtype=None):
+        super().__init__(in_features, rules, out_features, binary, zeta, drop_out_p, device, dtype)
     
         factory_kwargs = {'device': device, 'dtype': dtype}
         if binary:
@@ -169,7 +188,7 @@ class MamdaniGIFT(GIFT):
         return y, reconstructed_X, entropy
 
 
-class SklearnGIFTWrapper(BaseEstimator, ClassifierMixin):
+class SklearnGIFTRELAXWrapper(BaseEstimator, ClassifierMixin):
     """
     Scikit-learn wrapper for GIFT model
     """

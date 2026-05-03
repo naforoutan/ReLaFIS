@@ -90,3 +90,62 @@ class MNIST(Test):
         self.target = 'label'
         
         super().__init__(*args, **kwargs, test_data=test_data, index=False)
+
+
+class ORL(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        import os
+
+        def load_split(split_dir: str) -> pd.DataFrame:
+            files = [f for f in os.listdir(split_dir)
+                     if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))]
+            rows, labels = [], []
+            ref_size = None  # keep a consistent size across all images
+
+            for fname in files:
+                label = fname.rsplit("_", 1)[-1].split(".")[0]
+
+                img = Image.open(os.path.join(split_dir, fname)).convert("L")
+                if ref_size is None:
+                    # use the first image as the reference size (H, W)
+                    ref_size = img.size[::-1]  # (H, W)
+
+                # ensure consistent size across the split
+                img = img.resize(ref_size[::-1], Image.BILINEAR)
+
+                arr = np.asarray(img, dtype=np.uint8).reshape(-1)  # flatten to 1D
+                rows.append(arr)
+                labels.append(label)
+
+            df = pd.DataFrame(rows, columns=[f"p{i}" for i in range(len(rows[0]))])
+            df["label"] = labels
+            return df
+
+        train_dir = "./data/orl/train"
+        test_dir = "./data/orl/test"
+
+        self.df = load_split(train_dir)
+        test_data = load_split(test_dir)
+        print(self.df)
+        self.target = "label"
+        super().__init__(task_type="classification", *args, **kwargs, test_data=test_data, index=False)
+
+
+class FashionMNIST(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        from tensorflow import keras
+        import pandas as pd
+
+        (x_train, y_train), (x_test, y_test) = keras.datasets.fashion_mnist.load_data()
+
+        # flatten 28x28 images to match your other tabular datasets
+        train_df = pd.DataFrame(x_train.reshape(x_train.shape[0], -1))
+        train_df["label"] = y_train
+
+        test_df = pd.DataFrame(x_test.reshape(x_test.shape[0], -1))
+        test_df["label"] = y_test
+
+        self.df = train_df
+        self.target = "label"
+
+        super().__init__(task_type="classification", *args, **kwargs, test_data=test_df, index=False)
