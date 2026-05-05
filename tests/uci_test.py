@@ -1,3 +1,5 @@
+import os
+
 import pandas as pd
 from sklearn import datasets
 from . import Test
@@ -229,3 +231,175 @@ class CarEvaluation(Test):
         # Optionally one‑hot encode categorical features? Leave as is (strings) –
         # parent code may need to handle. Add note.
         super().__init__(train_size=1384, *args, **kwargs)
+
+
+class MFeat(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        import os
+        
+        # Define file paths (files are in ./data/mfeat/ directory)
+        features = {
+            'factors': './data/mfeat/mfeat-fac',
+            'fourier': './data/mfeat/mfeat-fou',
+            'karhunen': './data/mfeat/mfeat-kar',
+            'morph': './data/mfeat/mfeat-mor',
+            'pixel': './data/mfeat/mfeat-pix',
+            'zernike': './data/mfeat/mfeat-zer'
+        }
+        
+        # Read all features and combine with unique column names
+        data_frames = []
+        for name, path in features.items():
+            if os.path.exists(path):
+                df = pd.read_csv(path, sep='\s+', header=None)
+                # Rename columns to include feature type prefix
+                df.columns = [f"{name}_{i}" for i in range(df.shape[1])]
+                data_frames.append(df)
+                print(f"Loaded {name} with shape {df.shape}")
+            else:
+                raise FileNotFoundError(f"File not found: {path}")
+        
+        # Combine all features horizontally
+        self.df = pd.concat(data_frames, axis=1)
+        
+        # Generate correct labels (200 samples per digit 0-9)
+        n_samples_total = len(self.df)
+        samples_per_digit = 200
+        
+        # Create labels: 0 (200x), 1 (200x), ..., 9 (200x)
+        labels = [digit for digit in range(10) for _ in range(samples_per_digit)]
+        
+        # Create target series
+        self.target = pd.Series(labels[:n_samples_total], name='digit')
+        
+        print(f"Created labels for {len(self.target)} samples")
+        print(f"Class distribution:\n{self.target.value_counts().sort_index()}")
+        print(f"Total features: {self.df.shape[1]}")
+        
+        # No need to rename columns again as string - they're already strings with prefixes
+        self.target.name = 'digit'
+        
+        # MFeat has 2000 samples total, 200 per digit (0-9)
+        super().__init__(train_size=1600, *args, **kwargs)
+
+
+class Autism(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        from scipy.io import arff
+        import numpy as np
+        
+        path = "./data/Autism.arff"
+        data, meta = arff.loadarff(path)
+        df = pd.DataFrame(data)
+        
+        # Decode bytes to string if needed
+        for col in df.select_dtypes([object]).columns:
+            df[col] = df[col].str.decode('utf-8')
+        
+        # Target is last column 'Class/ASD'
+        self.target = df['Class/ASD'].map({'YES': 1, 'NO': 0})
+        self.df = df.drop('Class/ASD', axis=1)
+        
+        # Remove identifier columns
+        if 'age_desc' in self.df.columns:
+            self.df = self.df.drop('age_desc', axis=1)
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'ASD'
+        
+        super().__init__(train_size=560, *args, **kwargs)
+
+
+class Digits(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        # Built-in dataset from sklearn
+        data = datasets.load_digits(as_frame=True)
+        self.target = data.target
+        self.df = data.data
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'digit'
+        
+        super().__init__(train_size=1437, *args, **kwargs)
+
+
+class DNA(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        path = "./data/promoters.data"
+        
+        # Read the DNA promoter dataset
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        
+        data = []
+        for line in lines[1:]:  # Skip header
+            if line.strip():
+                parts = line.strip().split(',')
+                sequence_class = parts[0]  # '+' or '-'
+                sequence = ''.join(parts[1:]).replace('"', '')
+                data.append([sequence_class, sequence])
+        
+        df = pd.DataFrame(data, columns=['class', 'sequence'])
+        
+        # Convert DNA sequence to numerical features (one-hot encode nucleotides)
+        nucleotides = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+        max_len = max(df['sequence'].str.len())
+        
+        for i in range(max_len):
+            df[f'pos_{i}'] = df['sequence'].apply(
+                lambda x: nucleotides.get(x[i] if i < len(x) else 'A', 0)
+            )
+        
+        self.target = df['class'].map({'+': 1, '-': 0})
+        self.df = df.drop(['class', 'sequence'], axis=1)
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'promoter'
+        
+        super().__init__(train_size=80, *args, **kwargs)
+
+
+class SyntheticGaussian(Test):
+    def __init__(self, n_clusters=5, n_samples=1000, *args, **kwargs) -> None:
+        # Generate synthetic 2D Gaussian clusters
+        import numpy as np
+        
+        np.random.seed(42)
+        
+        # Create cluster centers
+        centers = np.random.randn(n_clusters, 2) * 3
+        
+        # Generate samples around centers
+        samples_per_cluster = n_samples // n_clusters
+        X = []
+        y = []
+        
+        for i, center in enumerate(centers):
+            cluster_samples = np.random.randn(samples_per_cluster, 2) * 0.5 + center
+            X.extend(cluster_samples)
+            y.extend([i] * samples_per_cluster)
+        
+        # Add remaining samples
+        remaining = n_samples - len(X)
+        if remaining > 0:
+            last_center = centers[-1]
+            extra_samples = np.random.randn(remaining, 2) * 0.5 + last_center
+            X.extend(extra_samples)
+            y.extend([n_clusters-1] * remaining)
+        
+        X = np.array(X)
+        y = np.array(y)
+        
+        self.df = pd.DataFrame(X, columns=['x', 'y'])
+        self.target = pd.Series(y, name='cluster')
+        
+        # Shuffle
+        indices = np.random.permutation(len(self.df))
+        self.df = self.df.iloc[indices].reset_index(drop=True)
+        self.target = self.target.iloc[indices].reset_index(drop=True)
+        
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = 'cluster'
+        
+        train_size = kwargs.pop('train_size', int(n_samples * 0.8))
+        super().__init__(train_size=train_size, *args, **kwargs)

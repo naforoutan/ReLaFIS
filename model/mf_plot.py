@@ -29,6 +29,7 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
     comb_weight_raw = model.comb_weight.detach().cpu().numpy()
     comb_weight = 1.0 / (1.0 + np.exp(-comb_weight_raw))
 
+    # relax
     relax_raw = model.relax.detach().cpu().numpy()
     relax = 1.0 / (1.0 + np.exp(-relax_raw * model.zeta))
 
@@ -70,6 +71,7 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
             # Combination
             w = comb_weight[feat_idx, rule_idx]
             mu_combined = w * mu_pos_neg + (1 - w) * mu_great_less
+            # mu_final = mu_combined # relax
 
             # Relaxation
             rlx = relax[feat_idx, rule_idx]
