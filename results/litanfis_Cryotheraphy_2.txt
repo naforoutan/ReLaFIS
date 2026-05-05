@@ -8,17 +8,17 @@ Experiment Result Cryotheraphy
     accuracy                         0.9048        63
    macro avg     0.9042    0.9042    0.9042        63
 weighted avg     0.9048    0.9048    0.9048        63
-AUC	0.9675456389452333
+AUC	0.975659229208925
 ------ test ------
               precision    recall  f1-score   support
 
-           0     0.7143    0.3846    0.5000        13
-           1     0.6000    0.8571    0.7059        14
+           0     0.7778    0.5385    0.6364        13
+           1     0.6667    0.8571    0.7500        14
 
-    accuracy                         0.6296        27
-   macro avg     0.6571    0.6209    0.6029        27
-weighted avg     0.6550    0.6296    0.6068        27
-AUC	0.8901098901098901
+    accuracy                         0.7037        27
+   macro avg     0.7222    0.6978    0.6932        27
+weighted avg     0.7202    0.7037    0.6953        27
+AUC	0.9120879120879121
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 6,

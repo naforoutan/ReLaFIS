@@ -1,32 +1,28 @@
-Experiment Result CarEvaluation
+Experiment Result PimaDiabetes
 ------ train ------
               precision    recall  f1-score   support
 
-           0     0.8804    0.9318    0.9054       308
-           1     0.8605    0.6727    0.7551        55
-           2     0.9833    0.9732    0.9782       969
-           3     0.9286    1.0000    0.9630        52
+           0     0.7978    0.8875    0.8402       400
+           1     0.7337    0.5794    0.6475       214
 
-    accuracy                         0.9530      1384
-   macro avg     0.9132    0.8944    0.9004      1384
-weighted avg     0.9535    0.9530    0.9526      1384
-AUC	0.9955982626961837
+    accuracy                         0.7801       614
+   macro avg     0.7657    0.7335    0.7439       614
+weighted avg     0.7754    0.7801    0.7731       614
+AUC	0.8499883177570092
 ------ test ------
               precision    recall  f1-score   support
 
-           0     0.7857    0.8684    0.8250        76
-           1     0.7000    0.5000    0.5833        14
-           2     0.9706    0.9585    0.9645       241
-           3     1.0000    0.9231    0.9600        13
+           0     0.7876    0.8900    0.8357       100
+           1     0.7317    0.5556    0.6316        54
 
-    accuracy                         0.9186       344
-   macro avg     0.8641    0.8125    0.8332       344
-weighted avg     0.9198    0.9186    0.9180       344
-AUC	0.9919955431631899
-{'binary': False,
+    accuracy                         0.7727       154
+   macro avg     0.7597    0.7228    0.7336       154
+weighted avg     0.7680    0.7727    0.7641       154
+AUC	0.8246296296296296
+{'binary': True,
  'drop_out_p': 0.3,
- 'in_features': 21,
- 'out_features': 4,
+ 'in_features': 8,
+ 'out_features': 2,
  'rules': 2}
 {'alpha': 1.0,
  'batch_size': 32,
@@ -35,4 +31,4 @@ AUC	0.9919955431631899
  'max_lr': 0.01,
  'min_alpha': 0.0,
  'random_state': 199,
- 'train_size': 1384}
+ 'train_size': 614}

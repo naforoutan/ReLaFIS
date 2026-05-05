@@ -2,22 +2,22 @@ Experiment Result Heart
 ------ train ------
               precision    recall  f1-score   support
 
-           0     0.8654    0.8824    0.8738       102
-           1     0.8588    0.8391    0.8488        87
+           0     0.8667    0.8922    0.8792       102
+           1     0.8690    0.8391    0.8538        87
 
-    accuracy                         0.8624       189
-   macro avg     0.8621    0.8607    0.8613       189
-weighted avg     0.8624    0.8624    0.8623       189
-AUC	0.9381338742393509
+    accuracy                         0.8677       189
+   macro avg     0.8679    0.8656    0.8665       189
+weighted avg     0.8678    0.8677    0.8675       189
+AUC	0.9418526031102097
 ------ test ------
               precision    recall  f1-score   support
 
-           0     0.7910    0.8548    0.8217        62
-           1     0.8085    0.7308    0.7677        52
+           0     0.7941    0.8710    0.8308        62
+           1     0.8261    0.7308    0.7755        52
 
-    accuracy                         0.7982       114
-   macro avg     0.7998    0.7928    0.7947       114
-weighted avg     0.7990    0.7982    0.7971       114
+    accuracy                         0.8070       114
+   macro avg     0.8101    0.8009    0.8031       114
+weighted avg     0.8087    0.8070    0.8056       114
 AUC	0.8830645161290323
 {'binary': True,
  'drop_out_p': 0.3,
