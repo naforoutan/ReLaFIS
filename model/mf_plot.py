@@ -29,10 +29,6 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
     comb_weight_raw = model.comb_weight.detach().cpu().numpy()
     comb_weight = 1.0 / (1.0 + np.exp(-comb_weight_raw))
 
-    # relax
-    relax_raw = model.relax.detach().cpu().numpy()
-    relax = 1.0 / (1.0 + np.exp(-relax_raw * model.zeta))
-
     in_features = model.in_features
     rules = model.rules_count
 
@@ -71,11 +67,7 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
             # Combination
             w = comb_weight[feat_idx, rule_idx]
             mu_combined = w * mu_pos_neg + (1 - w) * mu_great_less
-            # mu_final = mu_combined # relax
-
-            # Relaxation
-            rlx = relax[feat_idx, rule_idx]
-            mu_final = rlx + (1 - rlx) * mu_combined
+            mu_final = mu_combined
 
             ax.plot(x_vals, mu_final, color='b')
             ax.set_ylim(0, 1)
@@ -113,13 +105,11 @@ def plot_gift_param_progress(history, model_type):
         literal_means = [entry['literal_mean'] for entry in history]
         temp_means    = [entry['temp_mean'] for entry in history]
         weight_means  = [entry['weight_mean'] for entry in history]
-        relax_means   = [entry['relax_mean'] for entry in history]
         
         plt.figure(figsize=(10, 6))
         plt.plot(epochs, literal_means, 'b-', label='Literal', linewidth=2)
         plt.plot(epochs, temp_means,    'g-', label='Temp', linewidth=2)
         plt.plot(epochs, weight_means,  'r-', label='Weight', linewidth=2)
-        plt.plot(epochs, relax_means,   'm-', label='Relax', linewidth=2)
     
     elif model_type == 'litanfis':
         literal_means = [entry['literal_mean'] for entry in history]
