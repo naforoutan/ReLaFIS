@@ -7,12 +7,12 @@ from sklearn.metrics import accuracy_score
 import pandas as pd
 
 
-class GIFT(nn.Module):
+class GIFTSHIFT(nn.Module):
     """
     GIFT: Gaussian with Integrated Fuzzy Transformation
     Uses sigmoid for "greater than mu" and its negation for "less than mu"
     """
-    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, zeta: float, drop_out_p=0.5, device=None, dtype=None):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
 
@@ -28,7 +28,6 @@ class GIFT(nn.Module):
         self.drop_out_p = drop_out_p
 
         self.device = device
-        self.zeta = zeta  
 
         self.mean = nn.Parameter(torch.rand(
             (in_features, rules), **factory_kwargs))
@@ -37,8 +36,9 @@ class GIFT(nn.Module):
         self.literal = nn.Parameter(torch.randn(
             (in_features, rules), **factory_kwargs) * 0.1)
 
-        self.tsk_linear = nn.Linear(
-            in_features=in_features, out_features=rules * out_features, bias=True, **factory_kwargs)
+        self.local_slopes = nn.Parameter(torch.randn((rules, in_features, out_features), **factory_kwargs) * 0.01)
+        self.local_biases = nn.Parameter(torch.zeros((rules, out_features), **factory_kwargs))
+
         self.decoder_linear = nn.Linear(
             in_features=rules, out_features=in_features, bias=True, **factory_kwargs)
 
@@ -51,10 +51,6 @@ class GIFT(nn.Module):
             (in_features, rules), **factory_kwargs) * 0.1)
         self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1) 
         
-        # Relaxation parameters
-        self.relax = nn.Parameter(torch.zeros((in_features, rules), **factory_kwargs))
-        self.tsk_gate = nn.Parameter(torch.zeros((rules, out_features), **factory_kwargs))
-        self.tsk_zeta = zeta   # re‑use the same scaling factor for both relaxations
 
     def forward(self, X):
         y = self.encode(X)
@@ -98,11 +94,6 @@ class GIFT(nn.Module):
         weight = weight.unsqueeze(0)                        # (1, in_features, rules)
         mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
-
-        # Relaxation
-        relaxer = self.sigmoid(self.relax * self.zeta)     # (in_features, rules)
-        relaxer = relaxer.unsqueeze(0)                     # (1, in_features, rules)
-        mu = relaxer + (1 - relaxer) * mu                  # push mu towards 1 when relaxer is high
         
         epsilon = 1e-10
         y = torch.log(mu + epsilon)
@@ -116,19 +107,33 @@ class GIFT(nn.Module):
         return y
 
     def tsk(self, X, y):
-        # Linear projection of inputs
-        X = self.tsk_linear(X)                         # (b, rules*out)
-        X = X.reshape(-1, self.rules_count, self.out_features)   # (b, r, o)
+        """
+        Coupled TSK: y_i = sum_j [a_ij * (x_j - m_ij)] + b_i
+        """
+        batch_size = X.shape[0]
         
-        # Relaxation on the consequent
-        gate = torch.sigmoid(self.tsk_gate * self.tsk_zeta)   # (r, o)
-        gate = gate.unsqueeze(0)                               # (1, r, o)
-        X = X * (1 - gate)                                     # gate small -> keep X, gate large -> shrink X
+        means = self.mean  # (in_features, rules)
         
-        # Multiply by rule activations and sum
-        y = y.reshape(-1, self.rules_count, 1)                 # (b, r, 1)
-        X = X * y
-        return X.sum(dim=1)
+        # Shift inputs by rule centers: (x_j - m_ij)
+        X_expanded = X.unsqueeze(1).unsqueeze(3)  
+        means_expanded = means.T.unsqueeze(0).unsqueeze(3) 
+        
+        shifted_inputs = X_expanded - means_expanded
+        
+        slopes_expanded = self.local_slopes.unsqueeze(0)  
+
+        # linear comb
+        linear_terms = torch.matmul(shifted_inputs.transpose(-2, -1), slopes_expanded)
+        linear_terms = linear_terms.squeeze(-2) 
+        
+        # local bias
+        rule_outputs = linear_terms + self.local_biases.unsqueeze(0)
+        
+        # Weight by rule activations and sum
+        y = y.reshape(-1, self.rules_count, 1) 
+        weighted_outputs = rule_outputs * y 
+        
+        return weighted_outputs.sum(dim=1) 
     
 
     def get_interpretable_params(self):
@@ -136,35 +141,30 @@ class GIFT(nn.Module):
             literal = torch.sigmoid(self.literal)
             temp = torch.sigmoid(self.temp)
             weight = torch.sigmoid(self.comb_weight)
-            relax = torch.sigmoid(self.relax * self.zeta)
 
             stats = {
                 "literal_mean": literal.mean().item(),
                 "literal_std": literal.std().item(),
-
                 "temp_mean": temp.mean().item(),
                 "temp_std": temp.std().item(),
-
                 "weight_mean": weight.mean().item(),
                 "weight_std": weight.std().item(),
-
-                "relax_mean": relax.mean().item(),
-                "relax_std": relax.std().item(),
-
-                # saturation indicators (very important)
                 "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
                 "temp_saturation": ((temp < 0.1) | (temp > 0.9)).float().mean().item(),
                 "weight_saturation": ((weight < 0.1) | (weight > 0.9)).float().mean().item(),
-                "relax_saturation": ((relax > 0.9)).float().mean().item(),
+                # ADD THESE LINES:
+                "slope_mean": self.local_slopes.mean().item(),
+                "slope_std": self.local_slopes.std().item(),
+                "bias_mean": self.local_biases.mean().item(),
+                "center_mean": self.mean.mean().item(),
             }
-
         return stats
 
 
-class MamdaniGIFT(GIFT):
+class MamdaniGIFTSHIFT(GIFTSHIFT):
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
-                 zeta: float, drop_out_p=0.5, device=None, dtype=None):
-        super().__init__(in_features, rules, out_features, binary, zeta, drop_out_p, device, dtype)
+                 drop_out_p=0.5, device=None, dtype=None):
+        super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
     
         factory_kwargs = {'device': device, 'dtype': dtype}
         if binary:
@@ -188,9 +188,9 @@ class MamdaniGIFT(GIFT):
         return y, reconstructed_X, entropy
 
 
-class SklearnGIFTWrapper(BaseEstimator, ClassifierMixin):
+class SklearnGIFTSHIFTWrapper(BaseEstimator, ClassifierMixin):
     """
-    Scikit-learn wrapper for GIFT model
+    Scikit-learn wrapper for GIFTSHIFT model
     """
     def __init__(self, model, device=None, dtype=torch.float32):
         self.device = device if device else 'cpu'
@@ -262,4 +262,3 @@ class SklearnGIFTWrapper(BaseEstimator, ClassifierMixin):
 
     def set_params(self, **parameters):
         return self
-    
