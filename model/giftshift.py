@@ -262,3 +262,243 @@ class SklearnGIFTSHIFTWrapper(BaseEstimator, ClassifierMixin):
 
     def set_params(self, **parameters):
         return self
+    
+
+class GIFTSHIFTENTROPY(GIFTSHIFT):
+    """
+    GIFT with SHIFT and ENTROPY MINIMIZATION regularization.
+    
+    Adds a small penalty to reduce entropy per sample, encouraging rule specialization.
+    Professor's suggestion: minimize entropy with a VERY SMALL coefficient to prevent collapse.
+    """
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
+                 drop_out_p=0.5, entropy_coef=0.001, device=None, dtype=None):
+        """
+        Args:
+            in_features: Number of input features
+            rules: Number of fuzzy rules
+            out_features: Number of output classes
+            binary: Whether this is binary classification
+            drop_out_p: Dropout probability
+            entropy_coef: Coefficient for entropy penalty (use VERY SMALL, e.g., 0.0001-0.001)
+            device: Device to place model on
+            dtype: Data type for parameters
+        """
+        super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
+        self.entropy_coef = entropy_coef
+    
+    def forward(self, X):
+        """
+        Forward pass with entropy minimization penalty.
+        
+        Returns:
+            y: Model predictions
+            reconstructed_X: Reconstructed input from decoder
+            entropy_penalty: Scalar penalty to be added to loss (minimize this!)
+        """
+        # Encode input to rule activations
+        y = self.encode(X)
+        
+        # Calculate entropy per sample (sum across rules)
+        # Lower entropy = sample activates fewer rules (more specialized)
+        entropy_per_rule = -y * torch.log(y + 1e-10)      # (batch, rules)
+        entropy_per_sample = entropy_per_rule.sum(dim=1)  # (batch,)
+        entropy_penalty = entropy_per_sample.mean()       # scalar
+        
+        # Normalize rule activations if multiple rules
+        if self.rules_count > 1:
+            y = F.normalize(y, p=1, dim=1)
+        
+        # Apply dropout
+        y = self.drop_out(y)
+        
+        # Decoder for reconstruction
+        reconstructed_X = self.decoder_linear(y)
+        
+        # TSK inference
+        y = self.tsk(X, y)
+        
+        return y, reconstructed_X, entropy_penalty
+    
+    def get_entropy_stats(self, X):
+        """
+        Utility method to analyze entropy distribution.
+        Useful for monitoring if collapse is happening.
+        
+        Returns:
+            stats: Dictionary with entropy statistics
+        """
+        with torch.no_grad():
+            y = self.encode(X)
+            entropy_per_rule = -y * torch.log(y + 1e-10)
+            entropy_per_sample = entropy_per_rule.sum(dim=1)
+            
+            stats = {
+                "mean_entropy": entropy_per_sample.mean().item(),
+                "std_entropy": entropy_per_sample.std().item(),
+                "min_entropy": entropy_per_sample.min().item(),
+                "max_entropy": entropy_per_sample.max().item(),
+                "num_active_rules": (y > 0.1).sum(dim=1).float().mean().item(),  # avg rules with >0.1 activation
+            }
+        return stats
+
+
+class SklearnGIFTSHIFTENTROPYWrapper(SklearnGIFTSHIFTWrapper):
+    """
+    Scikit-learn wrapper for GIFTSHIFTENTROPY model.
+    Adds entropy analysis capabilities.
+    """
+    def __init__(self, model, device=None, dtype=torch.float32):
+        super().__init__(model, device, dtype)
+    
+    def predict(self, X):
+        """
+        Predict class labels for samples in X.
+        """
+        self._check_is_filiteraled()
+        X = self._convert_to_tensor(X)
+
+        with torch.no_grad():
+            # GIFTSHIFTENTROPY returns 3 values: predictions, reconstruction, entropy_penalty
+            y_pred = self.model(X)[0]  # Take first element (predictions)
+
+        if self.model.binary:
+            y_pred = torch.sigmoid(y_pred)
+            y_pred = y_pred.cpu().numpy() > 0.5
+        else:
+            y_pred = torch.softmax(y_pred, dim=1)
+            y_pred = y_pred.argmax(dim=1).cpu().numpy()
+        return y_pred
+
+    def predict_proba(self, X):
+        """
+        Predict class probabilities for samples in X.
+        """
+        self._check_is_filiteraled()
+        X = self._convert_to_tensor(X)
+
+        with torch.no_grad():
+            y_pred = self.model(X)[0]  # Take first element (predictions)
+        
+        if self.model.binary:
+            y_pred = torch.sigmoid(y_pred)
+            # Convert to (n_samples, 2) format
+            neg_proba = 1 - y_pred
+            y_pred = torch.cat([neg_proba, y_pred], dim=1)
+        else:
+            y_pred = torch.softmax(y_pred, dim=1)
+    
+        return y_pred.cpu().numpy()
+
+    def get_entropy_stats(self, X):
+        """
+        Get entropy statistics for the given input.
+        Useful for monitoring rule specialization and preventing collapse.
+        
+        Args:
+            X: Input data (numpy array, pandas DataFrame, or torch tensor)
+            
+        Returns:
+            Dictionary with entropy statistics
+        """
+        X = self._convert_to_tensor(X)
+        
+        with torch.no_grad():
+            # Get rule activations without going through full forward pass
+            y = self.model.encode(X)
+            entropy_per_rule = -y * torch.log(y + 1e-10)
+            entropy_per_sample = entropy_per_rule.sum(dim=1)
+            
+            stats = {
+                "mean_entropy_per_sample": entropy_per_sample.mean().item(),
+                "std_entropy_per_sample": entropy_per_sample.std().item(),
+                "min_entropy_per_sample": entropy_per_sample.min().item(),
+                "max_entropy_per_sample": entropy_per_sample.max().item(),
+                "mean_active_rules": (y > 0.1).sum(dim=1).float().mean().item(),
+                "total_rules": self.model.rules_count,
+                "entropy_coef": self.model.entropy_coef,
+            }
+        return stats
+
+    def get_rule_activations(self, X):
+        """
+        Get raw rule activations for interpretability.
+        
+        Args:
+            X: Input data
+            
+        Returns:
+            rule_activations: numpy array of shape (n_samples, n_rules)
+        """
+        X = self._convert_to_tensor(X)
+        
+        with torch.no_grad():
+            y = self.model.encode(X)
+            if self.model.rules_count > 1:
+                y = F.normalize(y, p=1, dim=1)
+        
+        return y.cpu().numpy()
+
+    def score_with_entropy_analysis(self, X, y):
+        """
+        Calculate accuracy and also return entropy statistics.
+        
+        Args:
+            X: Input data
+            y: True labels
+            
+        Returns:
+            accuracy: Accuracy score
+            entropy_stats: Dictionary with entropy statistics
+        """
+        accuracy = self.score(X, y)
+        entropy_stats = self.get_entropy_stats(X)
+        entropy_stats["accuracy"] = accuracy
+        return entropy_stats
+
+
+# Also create wrapper for Mamdani version if needed
+class SklearnMamdaniGIFTSHIFTENTROPYWrapper(SklearnGIFTSHIFTENTROPYWrapper):
+    """
+    Scikit-learn wrapper for MamdaniGIFTSHIFTENTROPY model.
+    """
+    def __init__(self, model, device=None, dtype=torch.float32):
+        super().__init__(model, device, dtype)
+
+class MamdaniGIFTSHIFTENTROPY(GIFTSHIFTENTROPY):
+    """
+    Mamdani version of GIFTSHIFT with entropy minimization.
+    Uses Mamdani inference instead of TSK.
+    """
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
+                 drop_out_p=0.5, entropy_coef=0.001, device=None, dtype=None):
+        super().__init__(in_features, rules, out_features, binary, drop_out_p, entropy_coef, device, dtype)
+        
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        if binary:
+            self.out_features = out_features = 1
+        self.mamdani_linear = nn.Linear(rules, out_features, bias=True, **factory_kwargs)
+    
+    def mamdani(self, y):
+        return self.mamdani_linear(y)
+    
+    def forward(self, X):
+        # Encode input to rule activations
+        y = self.encode(X)
+        
+        # Calculate entropy penalty (minimize this!)
+        entropy_per_rule = -y * torch.log(y + 1e-10)
+        entropy_per_sample = entropy_per_rule.sum(dim=1)
+        entropy_penalty = entropy_per_sample.mean()
+        
+        # Normalize and dropout
+        if self.rules_count > 1:
+            y = F.normalize(y, p=1, dim=1)
+        
+        y = self.drop_out(y)
+        reconstructed_X = self.decoder_linear(y)
+        
+        # Mamdani inference
+        y = self.mamdani(y)
+        
+        return y, reconstructed_X, entropy_penalty

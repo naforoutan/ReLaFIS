@@ -121,9 +121,14 @@ class Evaluator:
         X_test_noisy = self._apply_noise(self.X_test, noise_std, self.noise_type)
         
         # Create data loaders
+        if self.binary:
+            y_train_tensor = torch.tensor(self.y_train, dtype=torch.float32)
+        else:
+            y_train_tensor = torch.tensor(self.y_train, dtype=torch.long)
+            
         train_dataset = TensorDataset(
             torch.tensor(X_train_noisy, dtype=torch.float32),
-            torch.tensor(self.y_train, dtype=torch.float32 if self.binary else torch.long)
+            y_train_tensor
         )
         
         train_loader = DataLoader(train_dataset, batch_size=self.learning_params['batch_size'], shuffle=True)
@@ -131,6 +136,10 @@ class Evaluator:
         # Initialize model
         model = model_class(**model_params, dtype=torch.float32)
         model = model.to(self.device)
+        
+        # Check if model has entropy_coef attribute (for GIFTSHIFTENTROPY)
+        has_entropy_reg = hasattr(model, 'entropy_coef')
+        entropy_coef = model.entropy_coef if has_entropy_reg else 0.0
         
         # Setup training
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_params['lr'])
@@ -145,14 +154,26 @@ class Evaluator:
         
         # Loss functions
         cos = torch.nn.L1Loss()
+        
+        # Define criterion that handles both model types
         if self.binary:
             cross = torch.nn.BCEWithLogitsLoss()
-            def criterion(batch_X, batch_y, outputs, reconstructed, alpha):
-                return cross(outputs.squeeze(), batch_y.squeeze()) + cos(reconstructed, batch_X) * alpha
+            def criterion(batch_X, batch_y, outputs, reconstructed, alpha, entropy_penalty=None):
+                main_loss = cross(outputs.squeeze(), batch_y.squeeze())
+                recon_loss = cos(reconstructed, batch_X) * alpha
+                if entropy_penalty is not None and has_entropy_reg:
+                    entropy_loss = entropy_penalty * entropy_coef
+                    return main_loss + recon_loss + entropy_loss
+                return main_loss + recon_loss
         else:
             cross = torch.nn.CrossEntropyLoss()
-            def criterion(batch_X, batch_y, outputs, reconstructed, alpha):
-                return cross(outputs, batch_y.long()) + cos(reconstructed, batch_X) * alpha
+            def criterion(batch_X, batch_y, outputs, reconstructed, alpha, entropy_penalty=None):
+                main_loss = cross(outputs, batch_y.long())
+                recon_loss = cos(reconstructed, batch_X) * alpha
+                if entropy_penalty is not None and has_entropy_reg:
+                    entropy_loss = entropy_penalty * entropy_coef
+                    return main_loss + recon_loss + entropy_loss
+                return main_loss + recon_loss
         
         # Alpha decay
         alpha = self.learning_params['alpha']
@@ -173,8 +194,18 @@ class Evaluator:
                 batch_y = batch_y.to(self.device)
                 
                 optimizer.zero_grad()
-                outputs, reconstructed, _ = model(batch_X)
-                loss = criterion(batch_X, batch_y, outputs, reconstructed, alpha)
+                
+                # Forward pass - handles both GIFTSHIFT and GIFTSHIFTENTROPY
+                outputs = model(batch_X)
+                
+                # Unpack based on return length
+                if len(outputs) == 3:
+                    preds, reconstructed, entropy_penalty = outputs
+                else:
+                    preds, reconstructed = outputs
+                    entropy_penalty = None
+                
+                loss = criterion(batch_X, batch_y, preds, reconstructed, alpha, entropy_penalty)
                 loss.backward()
                 optimizer.step()
                 
@@ -276,6 +307,7 @@ class Evaluator:
                         run_seed = np.random.randint(0, 2**32 - 1)
                     
                     np.random.seed(run_seed)
+                    random.seed(run_seed)
                     torch.manual_seed(run_seed)
                     if torch.cuda.is_available():
                         torch.cuda.manual_seed_all(run_seed)
