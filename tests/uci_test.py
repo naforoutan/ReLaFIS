@@ -403,3 +403,48 @@ class SyntheticGaussian(Test):
         
         train_size = kwargs.pop('train_size', int(n_samples * 0.8))
         super().__init__(train_size=train_size, *args, **kwargs)
+
+
+
+class Parkinson(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        from scipy.io import loadmat
+        
+        # Load the .mat file
+        mat_data = loadmat('./data/parkinson.mat')
+        
+        # Extract feature columns (all numeric keys except 'sample_source' and 'label')
+        feature_keys = [key for key in mat_data.keys() 
+                       if not key.startswith('__') 
+                       and key not in ['sample_source', 'label']]
+        
+        # Create DataFrame with all features
+        data_dict = {}
+        for key in feature_keys:
+            # Extract and flatten the array to 1D
+            values = mat_data[key].flatten()
+            data_dict[key] = values
+        
+        self.df = pd.DataFrame(data_dict)
+        
+        # Extract target (label)
+        label_values = mat_data['label'].flatten()
+        self.target = pd.Series(label_values, name='label')
+        
+        # Convert target to integer type (assuming 0/1 or 1/2 labels)
+        self.target = self.target.astype(int)
+        
+        # Set column names as strings
+        self.df.columns = self.df.columns.astype(str)
+        self.target.name = str(self.target.name)
+        
+        print(f"Loaded Parkinson dataset: {len(self.df)} samples, {self.df.shape[1]} features")
+        print(f"Feature names: {list(self.df.columns)}")
+        print(f"Class distribution:\n{self.target.value_counts().sort_index()}")
+        
+        # Calculate train_size if not provided (default 80% of data)
+        if 'train_size' not in kwargs:
+            train_size = int(len(self.df) * 0.8)
+            kwargs['train_size'] = train_size
+        
+        super().__init__(*args, **kwargs)   
