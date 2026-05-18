@@ -2,13 +2,13 @@ Experiment Result Cryotheraphy
 ------ train ------
               precision    recall  f1-score   support
 
-           0     0.9286    0.8966    0.9123        29
-           1     0.9143    0.9412    0.9275        34
+           0     0.8966    0.8966    0.8966        29
+           1     0.9118    0.9118    0.9118        34
 
-    accuracy                         0.9206        63
-   macro avg     0.9214    0.9189    0.9199        63
-weighted avg     0.9209    0.9206    0.9205        63
-AUC	0.9827586206896551
+    accuracy                         0.9048        63
+   macro avg     0.9042    0.9042    0.9042        63
+weighted avg     0.9048    0.9048    0.9048        63
+AUC	0.975659229208925
 ------ test ------
               precision    recall  f1-score   support
 
@@ -18,7 +18,7 @@ AUC	0.9827586206896551
     accuracy                         0.7407        27
    macro avg     0.7796    0.7335    0.7273        27
 weighted avg     0.7761    0.7407    0.7295        27
-AUC	0.9285714285714286
+AUC	0.9120879120879121
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 6,

@@ -2,13 +2,13 @@ Experiment Result BreastCancer
 ------ train ------
               precision    recall  f1-score   support
 
-           0     0.9726    0.9965    0.9844       285
-           1     0.9939    0.9529    0.9730       170
+           0     0.9794    1.0000    0.9896       285
+           1     1.0000    0.9647    0.9820       170
 
-    accuracy                         0.9802       455
-   macro avg     0.9832    0.9747    0.9787       455
-weighted avg     0.9805    0.9802    0.9801       455
-AUC	0.9964086687306501
+    accuracy                         0.9868       455
+   macro avg     0.9897    0.9824    0.9858       455
+weighted avg     0.9871    0.9868    0.9868       455
+AUC	0.9970691434468524
 ------ test ------
               precision    recall  f1-score   support
 

@@ -8,17 +8,17 @@ Experiment Result Immunotherapy
     accuracy                         0.7937        63
    macro avg     0.3968    0.5000    0.4425        63
 weighted avg     0.6299    0.7937    0.7023        63
-AUC	0.7323076923076923
+AUC	0.7538461538461538
 ------ test ------
               precision    recall  f1-score   support
 
-           0     1.0000    0.1667    0.2857         6
-           1     0.8077    1.0000    0.8936        21
+           0     0.0000    0.0000    0.0000         6
+           1     0.7778    1.0000    0.8750        21
 
-    accuracy                         0.8148        27
-   macro avg     0.9038    0.5833    0.5897        27
-weighted avg     0.8504    0.8148    0.7585        27
-AUC	0.8571428571428571
+    accuracy                         0.7778        27
+   macro avg     0.3889    0.5000    0.4375        27
+weighted avg     0.6049    0.7778    0.6806        27
+AUC	0.8095238095238095
 {'binary': True,
  'drop_out_p': 0.3,
  'in_features': 7,
