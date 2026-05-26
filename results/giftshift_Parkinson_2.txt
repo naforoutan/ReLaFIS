@@ -2,13 +2,13 @@ Experiment Result Parkinson
 ------ train ------
               precision    recall  f1-score   support
 
-           0     1.0000    0.8732    0.9323        71
-           1     0.9477    1.0000    0.9731       163
+           0     1.0000    0.8873    0.9403        71
+           1     0.9532    1.0000    0.9760       163
 
-    accuracy                         0.9615       234
-   macro avg     0.9738    0.9366    0.9527       234
-weighted avg     0.9636    0.9615    0.9608       234
-AUC	0.9981854316080533
+    accuracy                         0.9658       234
+   macro avg     0.9766    0.9437    0.9582       234
+weighted avg     0.9674    0.9658    0.9652       234
+AUC	0.9977533915147325
 ------ test ------
               precision    recall  f1-score   support
 
