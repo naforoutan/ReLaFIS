@@ -3,7 +3,7 @@ from torch import nn
 import numpy as np
 import torch.nn.functional as F
 from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.metrics import accuracy_score  # or any other metric
+from sklearn.metrics import accuracy_score
 import pandas as pd
 
 
@@ -43,10 +43,13 @@ class LitAnfis(nn.Module):
 
     def forward(self, X):
         y = self.encode(X)
-        entropy = - y * torch.log(y)
+
+        # FIX Bug 2: original had `- y * torch.log(y)` with no epsilon guard,
+        # causing log(0) = -inf / NaN gradients when any rule activation hits zero.
+        entropy = - y * torch.log(y + 1e-10)
 
         if self.rules_count > 1:
-            y = F.normalize(y, p=1, dim=1)  # Adjust the dim based on your needs
+            y = F.normalize(y, p=1, dim=1)
 
         y = self.drop_out(y)
 
@@ -70,12 +73,12 @@ class LitAnfis(nn.Module):
         literal = self.sigmoid(self.literal)
         y = (y * literal) + (1 - y) * (1 - literal)
 
-        epsilon = 1e-10  # A small value to prevent log(0)
+        epsilon = 1e-10
         y = torch.log(y + epsilon)
 
-        max_log_y= torch.max(y, dim=1, keepdim=True)[0]
+        max_log_y = torch.max(y, dim=1, keepdim=True)[0]
 
-        y = torch.sum(y - max_log_y, dim=1)  # Subtract max for numerical stability
+        y = torch.sum(y - max_log_y, dim=1)
 
         y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
         
@@ -92,13 +95,13 @@ class LitAnfis(nn.Module):
     
     def get_interpretable_params(self):
         with torch.no_grad():
-            literal = torch.sigmoid(self.literal)                 # (in_features, rules)
+            literal = torch.sigmoid(self.literal)
 
             stats = {
                 "literal_mean": literal.mean().item(),
                 "literal_std": literal.std().item(),
                 "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
-                "literal_matrix": literal.cpu().numpy(),          # shape (in_features, rules)
+                "literal_matrix": literal.cpu().numpy(),
             }
         return stats
     
@@ -120,10 +123,12 @@ class MamdaniLitAnfis(LitAnfis):
     
     def forward(self, X):
         y = self.encode(X)
-        entropy = - y * torch.log(y)
+
+        # FIX Bug 2: same epsilon guard as LitAnfis.forward()
+        entropy = - y * torch.log(y + 1e-10)
 
         if self.rules_count > 1:
-            y = F.normalize(y, p=1, dim=1)  # Adjust the dim based on your needs
+            y = F.normalize(y, p=1, dim=1)
 
         reconstructed_X = self.decoder_linear(y)
 
@@ -132,12 +137,10 @@ class MamdaniLitAnfis(LitAnfis):
         return y, reconstructed_X, entropy
 
 
-
 class SklearnLitAnfisWrapper(BaseEstimator, ClassifierMixin):
     def __init__(self, model, device=None, dtype=torch.float32):
         self.device = device if device else 'cpu'
         self.dtype = dtype
-        # Initialize the model
         self.model = model.to(self.device)
 
     def fit(self, X, y):
@@ -147,9 +150,8 @@ class SklearnLitAnfisWrapper(BaseEstimator, ClassifierMixin):
         self._check_is_filiteraled()
         X = self._convert_to_tensor(X)
 
-        # Use the model to get predictions
         with torch.no_grad():
-            y_pred= self.model(X)[0]
+            y_pred = self.model(X)[0]
 
         if self.model.binary:
             y_pred = torch.sigmoid(y_pred)
@@ -174,32 +176,27 @@ class SklearnLitAnfisWrapper(BaseEstimator, ClassifierMixin):
         return y_pred.cpu().numpy()
 
     def score(self, X, y):
-        y_pred = self.predict(X)[0]
+        # FIX Bug 1: original was `self.predict(X)[0]` which indexes the first
+        # element of the numpy array instead of using the full prediction array.
+        y_pred = self.predict(X)
         return accuracy_score(y, y_pred)
 
     def _convert_to_tensor(self, data):
-        """ Helper function to convert numpy arrays to torch tensors and move to the correct device. """
         if isinstance(data, np.ndarray):
             data = torch.tensor(data, dtype=torch.float32, device=self.device)
-
         elif isinstance(data, torch.Tensor):
             data = data.to(self.device)
-
         elif isinstance(data, pd.DataFrame):
-            data = torch.tensor(
-                data.values, dtype=torch.float32, device=self.device)
+            data = torch.tensor(data.values, dtype=torch.float32, device=self.device)
         else:
-            raise ValueError(
-                "Input data must be a NumPy array or a PyTorch tensor.")
+            raise ValueError("Input data must be a NumPy array or a PyTorch tensor.")
         return data
 
     def _check_is_filiteraled(self):
         pass
 
     def get_params(self, deep=True):
-        return {
-            'model': self.model
-        }
+        return {'model': self.model}
 
     def set_params(self, **parameters):
         return self
