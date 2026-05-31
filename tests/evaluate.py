@@ -176,12 +176,14 @@ class Evaluator:
                 return main_loss + recon_loss
         
         # Alpha decay
+        # FIX Bug 3: guard against min_alpha=0 which makes power(0/alpha) collapse to 0 instantly
         alpha = self.learning_params['alpha']
         min_alpha = self.learning_params['min_alpha']
+        safe_min_alpha = max(min_alpha, 1e-6)
         decay_epochs = max(self.learning_params['epochs'] / 2, 1)
         
         if alpha > 0:
-            alpha_decaying = np.power(min_alpha / alpha, 1.0 / decay_epochs)
+            alpha_decaying = np.power(safe_min_alpha / alpha, 1.0 / (steps_per_epoch * decay_epochs))
         else:
             alpha_decaying = 0.95
         
@@ -214,7 +216,7 @@ class Evaluator:
                 except ValueError:
                     pass
             
-            alpha = max(min_alpha, alpha * alpha_decaying)
+            alpha = max(safe_min_alpha, alpha * alpha_decaying)
         
         # Switch to evaluation mode
         model.eval()
@@ -235,10 +237,11 @@ class Evaluator:
                 test_proba = wrapper.predict_proba(X_test_noisy)
                 
                 if self.binary:
-                    if train_proba.ndim == 1 or train_proba.shape[1] == 1:
+                    # FIX Bug 4: guard ndim before accessing shape[1] to avoid IndexError on 1D arrays
+                    if train_proba.ndim == 1 or (train_proba.ndim == 2 and train_proba.shape[1] == 1):
                         pos = train_proba.ravel()
                         train_proba = np.stack([1 - pos, pos], axis=1)
-                    if test_proba.ndim == 1 or test_proba.shape[1] == 1:
+                    if test_proba.ndim == 1 or (test_proba.ndim == 2 and test_proba.shape[1] == 1):
                         pos = test_proba.ravel()
                         test_proba = np.stack([1 - pos, pos], axis=1)
                     
