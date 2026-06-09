@@ -291,13 +291,20 @@ class Evaluator:
                     print(f"\nTraining {model_name.upper()}...")
                 
                 # Prepare model parameters
-                model_params = config['params'].copy()
-                model_params['in_features'] = self.X_train.shape[1]
-                if self.binary:
-                    model_params['out_features'] = 1
-                else:
-                    model_params['out_features'] = len(np.unique(self.y_train))
-                model_params['binary'] = self.binary
+                # Accept either 'model_params' or 'params' as the key
+                raw_params = config.get('model_params', config.get('params', {}))
+                model_params = raw_params.copy()
+                # Only set defaults for in_features / out_features / binary
+                # if the caller did NOT already supply them (e.g. via PCA wrapper)
+                if 'in_features' not in model_params:
+                    model_params['in_features'] = self.X_train.shape[1]
+                if 'out_features' not in model_params:
+                    if self.binary:
+                        model_params['out_features'] = 1
+                    else:
+                        model_params['out_features'] = len(np.unique(self.y_train))
+                if 'binary' not in model_params:
+                    model_params['binary'] = self.binary
                 
                 for run in range(self.n_runs):
                     if verbose:
