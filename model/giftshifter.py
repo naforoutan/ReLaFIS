@@ -8,10 +8,7 @@ import pandas as pd
 
 
 class GIFTSHIFTER(nn.Module):
-    """
-    GIFT: Gaussian with Integrated Fuzzy Transformation
-    Uses sigmoid for "greater than mu" and its negation for "less than mu"
-    """
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -108,89 +105,147 @@ class GIFTSHIFTER(nn.Module):
 
     def tsk(self, X, y):
         """
-        Entropy-Relaxed TSK consequent:
+        Beta-weighted Entropy-Relaxed TSK consequent.
 
-            y_i = Σ_j [ (1 - r_ij) * a_ij * ((x_j - m_ij) / φ_ij) ] + b_i
+        Architecture
+        ────────────
+        The antecedent has two parallel branches whose weights are the α's:
 
-        where:
-            r_ij = -⅓ Σ_{k=1..3} [ α_k·log(α_k) + (1-α_k)·log(1-α_k) ]
+            α₁ = sigmoid(literal)      participation weight of the Gaussian
+                                       (equality) branch and its negation
+            α₂ = sigmoid(temp)         participation weight of the Less-than /
+                                       Greater-than (sigmoidal) branch
 
-            α₁ = sigmoid(literal)     — literal vs negation balance
-            α₂ = sigmoid(temp)        — greater-than vs less-than balance
-            α₃ = sigmoid(comb_weight) — parallel node selection balance
+            β  = sigmoid(comb_weight)  mixing coefficient used in encode():
+                                           μ = β·μ_pos_neg + (1-β)·μ_great_less
+                                       β plays the same role here: it weights
+                                       the two entropy contributions.
 
-            φ_ij = softplus(std)      — fuzziness / scale parameter
+        Entropy terms  (one-sided: measures how "committed" each α is)
+        ──────────────────────────────────────────────────────────────
+            H₁ = -α₁ · log(α₁)        ∈ [0, 1/e]  max at α=1/e ≈ 0.368
+            H₂ = -α₂ · log(α₂)        ∈ [0, 1/e]
+
+        Note: one-sided entropy (not binary entropy) is used deliberately.
+        It is highest when α is small (uncertain / near 0) and collapses to 0
+        when α → 1 (fully committed). This matches the semantic: a small α
+        means the branch barely participates, so its contribution should be
+        relaxed away.
+
+        Normalisation: divide by max value 1/e so r_{i,j} ∈ [0, 1].
+
+        Per-feature, per-rule relaxation
+        ─────────────────────────────────
+            r_{i,j} = β · H₁_{i,j} + (1-β) · H₂_{i,j}
+
+        β mirrors its role in encode(): when β→1 the Gaussian branch dominates
+        and its entropy H₁ drives relaxation; when β→0 the sigmoidal branch
+        dominates and H₂ drives relaxation.
+
+        TSK output
+        ──────────
+            y_i = Σ_j [ (1 - r_{i,j}) · a_{i,j} · (x_j - m_{i,j}) / φ_{i,j} ] + b_i
+
+        where φ_{i,j} = softplus(std) > 0 is the fuzziness scale.
+
+        All intermediates use float64 for numerical stability; output is cast
+        back to the model's native dtype.
+
+        Shapes
+        ──────
+            X      : [B, F]
+            y      : [B, R]   (normalised firing strengths from encode)
+            output : [B, O]
         """
-        X64       = X.double()                                   # [B, F]
-        means64   = self.mean.double()                           # [F, R]
-        std64     = F.softplus(self.std).double()                # [F, R]  → φ_ij
-        slopes64  = self.local_slopes.double()                   # [R, F, O]
-        biases64  = self.local_biases.double()                   # [R, O]
-        y64       = y.double()                                   # [B, R]
-
         eps = 1e-10
 
-        def binary_entropy(raw_param):
-            """Sigmoid-activate then compute binary entropy. Returns [F, R] float64."""
-            alpha = torch.sigmoid(raw_param).double()            # [F, R]
-            h = -(alpha * torch.log(alpha + eps)
-                  + (1 - alpha) * torch.log(1 - alpha + eps))   # [F, R]
-            return h
+        X64      = X.double()
+        means64  = self.mean.double() 
+        phi64    = F.softplus(self.std).double()
+        slopes64 = self.local_slopes.double()
+        biases64 = self.local_biases.double()
+        y64      = y.double()
 
-        h1 = binary_entropy(self.literal)      # α₁: literal/negation
-        h2 = binary_entropy(self.temp)         # α₂: greater/less-than
-        h3 = binary_entropy(self.comb_weight)  # α₃: node selection
+        alpha1 = torch.sigmoid(self.literal).double()       # Gaussian branch weight
+        alpha2 = torch.sigmoid(self.temp).double()          # Sigmoidal branch weight
+        beta   = torch.sigmoid(self.comb_weight).double()   # mixing coefficient
 
-        log2 = torch.tensor(2.0, dtype=torch.float64, device=X.device).log()
-        r = (h1 + h2 + h3) / 3.0   # [F, R], values in [0, 1]
+        # one-sided entropy  H_k = -α_k · log(α_k)
+        # Normalise by 1/e (the maximum of -α·log(α) on (0,1]) so r ∈ [0,1]
+        one_over_e = torch.tensor(1.0 / torch.e, dtype=torch.float64, device=X.device)
 
-        relaxation = (1.0 - r)                  # [F, R]
-        relaxation = relaxation.T               # [R, F]  (transpose for alignment)
-        relaxation = relaxation.unsqueeze(-1)   # [R, F, 1]
+        H1 = -(alpha1 * torch.log(alpha1 + eps)) / one_over_e
+        H2 = -(alpha2 * torch.log(alpha2 + eps)) / one_over_e
 
-        phi = std64.T.unsqueeze(-1)             # [R, F, 1]
+        # relaxation term  r_{i,j} = β·H₁ + (1-β)·H₂  ∈ [0, 1]
+        r = beta * H1 + (1.0 - beta) * H2 
 
-        slopes_relaxed = relaxation * slopes64 / (phi + eps)  # [R, F, O]
+        # gate: (1 - r), reshaped for broadcasting
+        gate = (1.0 - r)
+        gate = gate.T.unsqueeze(-1)
 
-        X_exp     = X64.unsqueeze(1).unsqueeze(3)              # [B, 1, F, 1]
-        means_exp = means64.T.unsqueeze(0).unsqueeze(3)        # [1, R, F, 1]
-        shifted   = X_exp - means_exp                          # [B, R, F, 1]
+        phi_rs = phi64.T.unsqueeze(-1)
 
-        slopes_exp   = slopes_relaxed.unsqueeze(0)             # [1, R, F, O]
+        # relaxed & scaled slopes: a_{i,j} · (1 - r_{i,j}) / φ_{i,j}
+        slopes_relaxed = gate * slopes64 / (phi_rs + eps)
+
+        # shifted inputs: (x_j - m_{i,j}) 
+        X_exp     = X64.unsqueeze(1).unsqueeze(3)
+        means_exp = means64.T.unsqueeze(0).unsqueeze(3)
+        shifted   = X_exp - means_exp
+
+        # linear combination over features
+        slopes_exp   = slopes_relaxed.unsqueeze(0)
         linear_terms = torch.matmul(
-            shifted.transpose(-2, -1), slopes_exp              # [B, R, 1, F] × [1, R, F, O]
-        ).squeeze(-2)                                          # [B, R, O]
+            shifted.transpose(-2, -1), slopes_exp
+        ).squeeze(-2)
 
-        rule_outputs = linear_terms + biases64.unsqueeze(0)    # [B, R, O]
+        # add bias
+        rule_outputs = linear_terms + biases64.unsqueeze(0)
 
-        y64_r  = y64.reshape(-1, self.rules_count, 1)          # [B, R, 1]
-        result = (rule_outputs * y64_r).sum(dim=1)             # [B, O]
+        y64_r  = y64.reshape(-1, self.rules_count, 1)
+        result = (rule_outputs * y64_r).sum(dim=1)
 
-        # Cast back to the model's native dtype (usually float32)
         return result.to(X.dtype)
     
 
     def get_interpretable_params(self):
         with torch.no_grad():
-            literal = torch.sigmoid(self.literal)
-            temp = torch.sigmoid(self.temp)
-            weight = torch.sigmoid(self.comb_weight)
+            literal = torch.sigmoid(self.literal)   # α₁
+            temp    = torch.sigmoid(self.temp)       # α₂
+            beta    = torch.sigmoid(self.comb_weight)  # β
+
+            eps = 1e-10
+            one_over_e = 1.0 / torch.e
+            H1 = -(literal * torch.log(literal + eps)) / one_over_e 
+            H2 = -(temp    * torch.log(temp    + eps)) / one_over_e 
+            r  = beta * H1 + (1.0 - beta) * H2 
 
             stats = {
-                "literal_mean": literal.mean().item(),
-                "literal_std": literal.std().item(),
-                "temp_mean": temp.mean().item(),
-                "temp_std": temp.std().item(),
-                "weight_mean": weight.mean().item(),
-                "weight_std": weight.std().item(),
-                "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
-                "temp_saturation": ((temp < 0.1) | (temp > 0.9)).float().mean().item(),
-                "weight_saturation": ((weight < 0.1) | (weight > 0.9)).float().mean().item(),
-                # ADD THESE LINES:
-                "slope_mean": self.local_slopes.mean().item(),
-                "slope_std": self.local_slopes.std().item(),
-                "bias_mean": self.local_biases.mean().item(),
+                # α₁ - Gaussian branch participation
+                "alpha1_mean": literal.mean().item(),
+                "alpha1_std":  literal.std().item(),
+                "alpha1_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
+                # α₂ - Sigmoidal branch participation
+                "alpha2_mean": temp.mean().item(),
+                "alpha2_std":  temp.std().item(),
+                "alpha2_saturation": ((temp < 0.1) | (temp > 0.9)).float().mean().item(),
+                # β - mixing / weighting coefficient
+                "beta_mean": beta.mean().item(),
+                "beta_std":  beta.std().item(),
+                "beta_saturation": ((beta < 0.1) | (beta > 0.9)).float().mean().item(),
+                # Relaxation r_{i,j} diagnostics
+                "relaxation_mean": r.mean().item(),
+                "relaxation_std":  r.std().item(),
+                "relaxation_high": (r > 0.8).float().mean().item(),  # heavily relaxed features
+                "relaxation_low":  (r < 0.2).float().mean().item(),  # fully active features
+                # Consequent parameter diagnostics
+                "slope_mean":  self.local_slopes.mean().item(),
+                "slope_std":   self.local_slopes.std().item(),
+                "bias_mean":   self.local_biases.mean().item(),
                 "center_mean": self.mean.mean().item(),
+                "phi_mean":    F.softplus(self.std).mean().item(),
+                "phi_std":     F.softplus(self.std).std().item(),
             }
         return stats
 
