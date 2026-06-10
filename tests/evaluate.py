@@ -111,7 +111,8 @@ class Evaluator:
                            model_params: Dict,
                            wrapper_class: Type,
                            noise_std: float, 
-                           run_id: int) -> Tuple[float, float, float, float, Any]:
+                           run_id: int,
+                           run_seed: int = 42) -> Tuple[float, float, float, float, Any]:
         """
         Train and evaluate a single model with given noise level
         Returns: (train_acc, test_acc, train_auc, test_auc, trained_wrapper)
@@ -131,7 +132,16 @@ class Evaluator:
             y_train_tensor
         )
         
-        train_loader = DataLoader(train_dataset, batch_size=self.learning_params['batch_size'], shuffle=True)
+        def seed_worker(worker_id):
+            worker_seed = torch.initial_seed() % 2**32
+            np.random.seed(worker_seed)
+            random.seed(worker_seed)
+
+        g = torch.Generator()
+        g.manual_seed(run_seed if self.random_state is not None else torch.initial_seed())
+
+        train_loader = DataLoader(train_dataset, batch_size=self.learning_params['batch_size'], shuffle=True,
+                                  worker_init_fn=seed_worker, generator=g)
         
         # Initialize model
         model = model_class(**model_params, dtype=torch.float32)
@@ -162,7 +172,8 @@ class Evaluator:
                 main_loss = cross(outputs.squeeze(), batch_y.squeeze())
                 recon_loss = cos(reconstructed, batch_X) * alpha
                 if entropy_penalty is not None and has_entropy_reg:
-                    entropy_loss = entropy_penalty * entropy_coef
+                    # entropy_penalty is a [B, R] tensor — reduce to scalar before scaling
+                    entropy_loss = entropy_penalty.mean() * entropy_coef
                     return main_loss + recon_loss + entropy_loss
                 return main_loss + recon_loss
         else:
@@ -171,7 +182,8 @@ class Evaluator:
                 main_loss = cross(outputs, batch_y.long())
                 recon_loss = cos(reconstructed, batch_X) * alpha
                 if entropy_penalty is not None and has_entropy_reg:
-                    entropy_loss = entropy_penalty * entropy_coef
+                    # entropy_penalty is a [B, R] tensor — reduce to scalar before scaling
+                    entropy_loss = entropy_penalty.mean() * entropy_coef
                     return main_loss + recon_loss + entropy_loss
                 return main_loss + recon_loss
         
@@ -327,7 +339,8 @@ class Evaluator:
                         model_params,
                         config['wrapper_class'],
                         noise_std,
-                        run
+                        run,
+                        run_seed
                     )
                     
                     if verbose:
@@ -552,126 +565,70 @@ class Evaluator:
         model_names = list(self.model_configs.keys())
         if len(model_names) < 2:
             return "Insufficient data", {}
-        
-        model1, model2 = model_names[0], model_names[1]
-        
-        # Check if we should use robustness scores or standard metrics
+
         use_robustness = self.use_noise and len(self.noise_levels) > 1
-        
+
         if use_robustness:
             robustness_scores = self.compute_robustness_score()
-            
             if len(robustness_scores) < 2:
                 print("Warning: Robustness scores not available, falling back to standard metrics")
                 use_robustness = False
-        
+
         if use_robustness:
-            # ROBUSTNESS-BASED COMPARISON
-            criteria = {
-                'accuracy_robustness': robustness_scores[model1]['accuracy_robustness_score'] > robustness_scores[model2]['accuracy_robustness_score'],
-                'auc_robustness': robustness_scores[model1]['auc_robustness_score'] > robustness_scores[model2]['auc_robustness_score'],
-                'combined_robustness': robustness_scores[model1]['combined_score'] > robustness_scores[model2]['combined_score']
+            # ROBUSTNESS-BASED COMPARISON — works for N >= 2 models
+            # Score each model by its combined robustness score
+            scored = {
+                name: robustness_scores[name]['combined_score']
+                for name in model_names
+                if name in robustness_scores
             }
-            
-            if len(self.noise_levels) > 2:
-                max_noise = max(self.noise_levels)
-                model1_high_noise = summary_df[(summary_df['model'] == model1) & (summary_df['noise_std'] == max_noise)]['test_acc_mean'].values
-                model2_high_noise = summary_df[(summary_df['model'] == model2) & (summary_df['noise_std'] == max_noise)]['test_acc_mean'].values
-                
-                if len(model1_high_noise) > 0 and len(model2_high_noise) > 0:
-                    criteria['high_noise_accuracy'] = model1_high_noise[0] > model2_high_noise[0]
-            
-            model1_wins = sum(criteria.values())
-            model2_wins = len(criteria) - model1_wins
-            
-            if model1_wins > model2_wins:
-                best_model = model1.upper()
-                reason = f"{model1.upper()} wins on {model1_wins}/{len(criteria)} robustness criteria"
-            elif model2_wins > model1_wins:
-                best_model = model2.upper()
-                reason = f"{model2.upper()} wins on {model2_wins}/{len(criteria)} robustness criteria"
-            else:
-                if robustness_scores[model1]['combined_score'] >= robustness_scores[model2]['combined_score']:
-                    best_model = model1.upper()
-                else:
-                    best_model = model2.upper()
-                reason = "Tie broken by combined robustness score"
-            
-            return best_model, {
-                'criteria': criteria,
+            if not scored:
+                return "Insufficient data", {}
+
+            best_model = max(scored, key=scored.get)
+            reason = (
+                f"{best_model.upper()} has the highest combined robustness score "
+                f"({scored[best_model]:.4f}) across {len(model_names)} models"
+            )
+            return best_model.upper(), {
                 'robustness_scores': robustness_scores,
+                'all_combined_scores': {k: v for k, v in scored.items()},
                 'decision_reason': reason,
                 'decision_type': 'robustness_based',
-                f'{model1}_wins': model1_wins,
-                f'{model2}_wins': model2_wins
             }
-        
+
         else:
-            # STANDARD PERFORMANCE-BASED COMPARISON (Clean data)
+            # STANDARD PERFORMANCE-BASED COMPARISON (Clean data) — works for N >= 2 models
             clean_data = summary_df[summary_df['noise_std'] == 0]
-            
             if len(clean_data) == 0:
                 clean_data = summary_df[summary_df['noise_std'] == summary_df['noise_std'].min()]
-            
-            model1_clean = clean_data[clean_data['model'] == model1]
-            model2_clean = clean_data[clean_data['model'] == model2]
-            
-            if len(model1_clean) == 0 or len(model2_clean) == 0:
+
+            clean_performance = {}
+            for name in model_names:
+                row = clean_data[clean_data['model'] == name]
+                if len(row) == 0:
+                    continue
+                clean_performance[name] = {
+                    'accuracy':     row['test_acc_mean'].values[0],
+                    'accuracy_std': row['test_acc_std'].values[0],
+                    'auc':          row['test_auc_mean'].values[0],
+                    'auc_std':      row['test_auc_std'].values[0],
+                    'combined':     (row['test_acc_mean'].values[0] + row['test_auc_mean'].values[0]) / 2,
+                }
+
+            if not clean_performance:
                 return "Insufficient data", {}
-            
-            criteria = {
-                'test_accuracy': model1_clean['test_acc_mean'].values[0] > model2_clean['test_acc_mean'].values[0],
-                'test_auc': model1_clean['test_auc_mean'].values[0] > model2_clean['test_auc_mean'].values[0],
-                'more_stable': model1_clean['test_acc_std'].values[0] < model2_clean['test_acc_std'].values[0]
-            }
-            
-            model1_wins = sum(criteria.values())
-            model2_wins = len(criteria) - model1_wins
-            
-            acc_diff = (model1_clean['test_acc_mean'].values[0] - model2_clean['test_acc_mean'].values[0]) * 100
-            auc_diff = (model1_clean['test_auc_mean'].values[0] - model2_clean['test_auc_mean'].values[0]) * 100
-            
-            if model1_wins > model2_wins:
-                best_model = model1.upper()
-                reason = f"{model1.upper()} outperforms on clean data: +{abs(acc_diff):.2f}% accuracy, +{abs(auc_diff):.2f}% AUC"
-            elif model2_wins > model1_wins:
-                best_model = model2.upper()
-                reason = f"{model2.upper()} outperforms on clean data: +{abs(acc_diff):.2f}% accuracy, +{abs(auc_diff):.2f}% AUC"
-            else:
-                model1_combined = (model1_clean['test_acc_mean'].values[0] + model1_clean['test_auc_mean'].values[0]) / 2
-                model2_combined = (model2_clean['test_acc_mean'].values[0] + model2_clean['test_auc_mean'].values[0]) / 2
-                
-                if model1_combined >= model2_combined:
-                    best_model = model1.upper()
-                    reason = f"Tie broken by combined accuracy+AUC score favoring {model1.upper()}"
-                else:
-                    best_model = model2.upper()
-                    reason = f"Tie broken by combined accuracy+AUC score favoring {model2.upper()}"
-            
-            return best_model, {
-                'criteria': criteria,
-                'clean_performance': {
-                    model1: {
-                        'accuracy': model1_clean['test_acc_mean'].values[0],
-                        'accuracy_std': model1_clean['test_acc_std'].values[0],
-                        'auc': model1_clean['test_auc_mean'].values[0],
-                        'auc_std': model1_clean['test_auc_std'].values[0]
-                    },
-                    model2: {
-                        'accuracy': model2_clean['test_acc_mean'].values[0],
-                        'accuracy_std': model2_clean['test_acc_std'].values[0],
-                        'auc': model2_clean['test_auc_mean'].values[0],
-                        'auc_std': model2_clean['test_auc_std'].values[0]
-                    }
-                },
-                'performance_gap': {
-                    'accuracy_diff_percent': acc_diff,
-                    'auc_diff_percent': auc_diff
-                },
+
+            best_model = max(clean_performance, key=lambda k: clean_performance[k]['combined'])
+            best = clean_performance[best_model]
+            reason = (
+                f"{best_model.upper()} has the highest combined accuracy+AUC on clean data "
+                f"(Acc={best['accuracy']:.4f}, AUC={best['auc']:.4f})"
+            )
+            return best_model.upper(), {
+                'clean_performance': clean_performance,
                 'decision_reason': reason,
                 'decision_type': 'performance_based',
-                f'{model1}_wins': model1_wins,
-                f'{model2}_wins': model2_wins
             }
     
     def print_detailed_report(self):
@@ -723,10 +680,14 @@ class Evaluator:
         if 'decision_reason' in details:
             print(f"📝 Reason: {details['decision_reason']}")
         
-        if 'criteria' in details:
-            print(f"\nDetailed criteria comparison:")
-            for criterion, winner_is_first in details['criteria'].items():
-                winner = list(self.model_configs.keys())[0].upper() if winner_is_first else list(self.model_configs.keys())[1].upper()
-                print(f"  • {criterion}: {winner}")
+        if 'all_combined_scores' in details:
+            print(f"\nAll combined robustness scores:")
+            for name, score in sorted(details['all_combined_scores'].items(), key=lambda x: -x[1]):
+                print(f"  • {name.upper()}: {score:.4f}")
+        elif 'clean_performance' in details:
+            print(f"\nClean-data performance summary:")
+            for name, perf in details['clean_performance'].items():
+                print(f"  • {name.upper()}: Acc={perf['accuracy']:.4f} ± {perf['accuracy_std']:.4f}, "
+                      f"AUC={perf['auc']:.4f} ± {perf['auc_std']:.4f}")
         
         print("="*80)
