@@ -1,29 +1,6 @@
-from .base import Test
 import torch
 from torch.utils.data import TensorDataset
 from pycaret.classification import ClassificationExperiment
-
-from .tabular_small import (
-    Iris, Wine, Glass, Heart, Haberman, Thyroid,
-    Cryotheraphy, Immunotherapy, BreastCancer, PimaDiabetes,
-    BCW, Autism, CarEvaluation, Segmentation, SegmentaitionUCI,
-    DNA, Digits, DigitsUCI as Digits_UCI, Parkinson,
-    MFeat, SyntheticGaussian,
-)
-from .tabular_large import AdultIncome, BankMarketing, Smoke
-from .image import MNIST, FashionMNIST, ORL
-from .bio_medical import Diabetes, Digits_UCI_Repo
-
-__all__ = [
-    "Iris", "Wine", "Glass", "Heart", "Haberman", "Thyroid",
-    "Cryotheraphy", "Immunotherapy", "BreastCancer", "PimaDiabetes",
-    "BCW", "Autism", "CarEvaluation", "Segmentation", "SegmentaitionUCI",
-    "DNA", "Digits", "Digits_UCI", "Parkinson", "MFeat", "SyntheticGaussian",
-    "AdultIncome", "BankMarketing", "Smoke",
-    "MNIST", "FashionMNIST", "ORL",
-    "Diabetes", "Digits_UCI_Repo",
-]
-
 
 
 class Test:
