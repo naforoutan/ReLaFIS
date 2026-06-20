@@ -2,25 +2,27 @@ Experiment Result Madelon
 ------ train ------
               precision    recall  f1-score   support
 
-           0     1.0000    1.0000    1.0000      1819
+           0     0.7216    0.6161    0.6647       909
+           1     0.6654    0.7626    0.7107       910
 
-    accuracy                         1.0000      1819
-   macro avg     1.0000    1.0000    1.0000      1819
-weighted avg     1.0000    1.0000    1.0000      1819
-AUC	nan
+    accuracy                         0.6894      1819
+   macro avg     0.6935    0.6893    0.6877      1819
+weighted avg     0.6935    0.6894    0.6877      1819
+AUC	0.7392606293596392
 ------ test ------
               precision    recall  f1-score   support
 
-           0     1.0000    1.0000    1.0000       781
+           0     0.5755    0.4680    0.5162       391
+           1     0.5508    0.6538    0.5979       390
 
-    accuracy                         1.0000       781
-   macro avg     1.0000    1.0000    1.0000       781
-weighted avg     1.0000    1.0000    1.0000       781
-AUC	nan
-{'binary': False,
+    accuracy                         0.5608       781
+   macro avg     0.5631    0.5609    0.5571       781
+weighted avg     0.5631    0.5608    0.5570       781
+AUC	0.56141058430061
+{'binary': True,
  'drop_out_p': 0.3,
  'in_features': 500,
- 'out_features': 1,
+ 'out_features': 2,
  'rules': 2}
 {'alpha': 1.0,
  'batch_size': 32,

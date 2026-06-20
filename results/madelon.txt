@@ -9,31 +9,31 @@ Testing: CLEAN DATA (σ = 0)
 ==================================================
 
 Training GIFTSHIFTER...
-  Run 1/5... Acc=0.9639
-  Run 2/5... Acc=0.9639
-  Run 3/5... Acc=0.9556
-  Run 4/5... Acc=0.9556
-  Run 5/5... Acc=0.9583
+  Run 1/5... Acc=0.5378
+  Run 2/5... Acc=0.5467
+  Run 3/5... Acc=0.5467
+  Run 4/5... Acc=0.5442
+  Run 5/5... Acc=0.5429
 
 Training LITANFIS...
-  Run 1/5... Acc=0.9611
-  Run 2/5... Acc=0.9556
-  Run 3/5... Acc=0.9583
-  Run 4/5... Acc=0.9583
-  Run 5/5... Acc=0.9583
+  Run 1/5... Acc=0.5365
+  Run 2/5... Acc=0.5301
+  Run 3/5... Acc=0.5378
+  Run 4/5... Acc=0.5378
+  Run 5/5... Acc=0.5352
 
 Training GIFTSHIFT...
-  Run 1/5... Acc=0.9639
-  Run 2/5... Acc=0.9611
-  Run 3/5... Acc=0.9639
-  Run 4/5... Acc=0.9639
+  Run 1/5... Acc=0.4853
+  Run 2/5... Acc=0.4866
+  Run 3/5... Acc=0.5006
+  Run 4/5... Acc=0.5237
   Run 5/5... 
-Noise levels: 100%|██████████| 1/1 [02:34<00:00, 154.84s/it]
-Acc=0.9639
+Noise levels: 100%|██████████| 1/1 [04:57<00:00, 297.16s/it]
+Acc=0.5083
 
 ================================================================================
 MODEL EVALUATION REPORT
-Dataset: Digits
+Dataset: Madelon
 Noise Enabled: False
 Number of runs per configuration: 5
 ================================================================================
@@ -42,17 +42,17 @@ Number of runs per configuration: 5
 --------------------------------------------------------------------------------
 Model           Noise σ    Test Acc ± Std       Test AUC ± Std      
 --------------------------------------------------------------------------------
-GIFTSHIFTER     Clean      0.9594 ± 0.0038    0.9987 ± 0.0001
-LITANFIS        Clean      0.9583 ± 0.0018    0.9986 ± 0.0001
-GIFTSHIFT       Clean      0.9633 ± 0.0011    0.9987 ± 0.0001
+GIFTSHIFTER     Clean      0.5437 ± 0.0033    0.5627 ± 0.0019
+LITANFIS        Clean      0.5355 ± 0.0029    0.5573 ± 0.0011
+GIFTSHIFT       Clean      0.5009 ± 0.0143    0.4960 ± 0.0169
 
 🏆 VERDICT:
 --------------------------------------------------------------------------------
-✅ BEST MODEL: GIFTSHIFT
-📝 Reason: GIFTSHIFT has the highest combined accuracy+AUC on clean data (Acc=0.9633, AUC=0.9987)
+✅ BEST MODEL: GIFTSHIFTER
+📝 Reason: GIFTSHIFTER has the highest combined accuracy+AUC on clean data (Acc=0.5437, AUC=0.5627)
 
 Clean-data performance summary:
-  • GIFTSHIFTER: Acc=0.9594 ± 0.0038, AUC=0.9987 ± 0.0001
-  • LITANFIS: Acc=0.9583 ± 0.0018, AUC=0.9986 ± 0.0001
-  • GIFTSHIFT: Acc=0.9633 ± 0.0011, AUC=0.9987 ± 0.0001
+  • GIFTSHIFTER: Acc=0.5437 ± 0.0033, AUC=0.5627 ± 0.0019
+  • LITANFIS: Acc=0.5355 ± 0.0029, AUC=0.5573 ± 0.0011
+  • GIFTSHIFT: Acc=0.5009 ± 0.0143, AUC=0.4960 ± 0.0169
 ================================================================================

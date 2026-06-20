@@ -106,6 +106,44 @@ class Evaluator:
         
         return result.numpy()
     
+    @staticmethod
+    def _safe_multiclass_auc(y_true: np.ndarray, y_proba: np.ndarray, all_classes: np.ndarray) -> float:
+        """
+        One-vs-rest macro AUC that skips classes absent from y_true instead of
+        letting sklearn's undefined per-class score (NaN) silently poison the
+        averaged result. Matches roc_auc_score(..., multi_class='ovr') exactly
+        when every class in `all_classes` is present in y_true.
+
+        y_proba columns are assumed to be ordered to match `all_classes`
+        (this holds for predict_proba output paired with np.unique-derived labels).
+        
+        Returns NaN only if NO classes can be evaluated (e.g., test set is single-class
+        or perfectly predicted). In edge cases with perfect predictions, uses accuracy-based
+        fallback.
+        """
+        aucs = []
+        for i, cls in enumerate(all_classes):
+            y_bin = (y_true == cls).astype(int)
+            n_pos = y_bin.sum()
+            if n_pos == 0 or n_pos == len(y_bin):
+                # Class missing from this split (or split is single-class):
+                # OvR AUC is undefined here, so skip rather than inject NaN.
+                continue
+            aucs.append(roc_auc_score(y_bin, y_proba[:, i]))
+        
+        if aucs:
+            return float(np.mean(aucs))
+        else:
+            # Edge case: test set is single-class or all classes perfectly separated
+            # Use 1.0 as AUC if predictions are perfect (perfect accuracy case)
+            predictions = np.argmax(y_proba, axis=1)
+            if np.array_equal(predictions, y_true):
+                # All predictions correct → AUC would be 1.0 if computable
+                return 1.0
+            else:
+                # Unable to compute meaningful AUC
+                return np.nan
+
     def _train_and_evaluate(self, 
                            model_class: Type[nn.Module],
                            model_params: Dict,
@@ -270,17 +308,29 @@ class Evaluator:
                     train_auc = roc_auc_score(self.y_train, train_proba[:, 1])
                     test_auc = roc_auc_score(self.y_test, test_proba[:, 1])
                 else:
-                    # For multiclass, check if we have enough classes in both train and test sets
+                    # For multiclass, average per-class OvR AUC only over classes
+                    # that actually appear in this split's y_true.
                     all_classes = np.unique(np.concatenate([self.y_train, self.y_test]))
-                    train_classes = len(np.unique(self.y_train))
-                    test_classes = len(np.unique(self.y_test))
-                    
-                    if train_classes > 1 and test_classes > 1:
-                        train_auc = roc_auc_score(self.y_train, train_proba, multi_class='ovr', labels=all_classes)
-                        test_auc = roc_auc_score(self.y_test, test_proba, multi_class='ovr', labels=all_classes)
-                    else:
-                        train_auc = np.nan
-                        test_auc = np.nan
+                    #
+                    # FIX: the original code passed labels=union(train, test) to
+                    # roc_auc_score(..., multi_class='ovr') for BOTH train and test.
+                    # With many classes and few samples per class (e.g. ORL: 40
+                    # classes, ~5-10 samples each), it's common for a class present
+                    # in train to be absent from test (or vice versa). sklearn
+                    # requires `labels` to have the same length as the probability
+                    # matrix's columns, so labels can't simply be narrowed to the
+                    # present classes while keeping all proba columns — and OvR AUC
+                    # is mathematically undefined for a class with zero positives.
+                    # Passing it anyway produces a per-class NaN that silently
+                    # propagates into the averaged score. No exception is raised
+                    # (this file suppresses warnings globally), so it isn't caught
+                    # by the except block below, and you silently get test_auc=nan.
+                    #
+                    # Fix: compute each class's OvR AUC individually and average
+                    # only over classes with both positive and negative examples
+                    # in that split, skipping (not zeroing) the rest.
+                    train_auc = self._safe_multiclass_auc(self.y_train, train_proba, all_classes)
+                    test_auc = self._safe_multiclass_auc(self.y_test, test_proba, all_classes)
                     
             except Exception as e:
                 print(f"Warning: Could not compute AUC - {e}")
