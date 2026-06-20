@@ -117,7 +117,27 @@ class SRBCT(Test):
         super().__init__(*args, **kwargs)
 
 
+class Madelon(Test):
+    """Madelon dataset from local ARFF file (sparse format)."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        df, _, _ = parse_sparse_arff("./data/madelon.arff")
+
+        self.df = df.fillna(0)
+        self.target = "target"
+
+        super().__init__(*args, **kwargs)
+
+class ORL(Test):
+    """AT&T dataset from local ARFF file (sparse format)."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        df, _, _ = parse_sparse_arff("./data/AT&T.arff")
+
+        self.df = df.fillna(0)
+        self.target = "target"
+
+        super().__init__(*args, **kwargs)
 
 # ---------------------------------------------------------------------------
 # Future slots — add below as you test new papers
@@ -195,7 +215,7 @@ def parse_sparse_arff(filepath):
         if line.strip():
             # Split by comma and parse each pair
             pairs = [p.strip() for p in line.split(',') if p.strip()]
-            target_value = None
+            target_value = 0
             
             for pair in pairs:
                 parts = pair.split()

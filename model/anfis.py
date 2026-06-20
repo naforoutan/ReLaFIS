@@ -9,7 +9,8 @@ import pandas as pd
 
 
 class ANFIS(nn.Module):
-    def __init__(self, in_features: int, rules: int, out_features: int, binary:bool=False, device=None, dtype=None):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool = False,
+                 drop_out_p: float = 0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = self.factory_kwargs = {'device': device, 'dtype': dtype}
         
@@ -19,6 +20,8 @@ class ANFIS(nn.Module):
         self.rules_count = rules
         self.in_features = in_features
         self.out_features = out_features
+
+        self.drop_out_p = drop_out_p
 
         self.device = device
 
@@ -34,12 +37,19 @@ class ANFIS(nn.Module):
 
         self.mamdani_linear = nn.Linear(
             in_features=rules, out_features=out_features, bias=True, **factory_kwargs)
+        self.decoder_linear = nn.Linear(
+            in_features=rules, out_features=in_features, bias=True, **factory_kwargs)
+
+        self.drop_out = nn.Dropout(p=drop_out_p)
 
 
     def encode(self, X):
 
         mean = self.mean.view(1, *self.mean.shape)
-        std = self.std.view(1, *self.std.shape)
+        # Clamp std away from 0: it's unconstrained and used as sigma**2 in
+        # the denominator below, so it can drift and blow up the gradient
+        # into NaN (same failure mode fixed in GIFTSHIFTER / LitAnfis / UNFIS).
+        std = self.std.clamp(min=1e-3).view(1, *self.std.shape)
 
         X = X.view(*X.shape, 1)
 
@@ -68,10 +78,14 @@ class ANFIS(nn.Module):
 
         if self.rules_count > 1:
             y = F.normalize(y, p=1, dim=1)  
-            
+
+        y = self.drop_out(y)
+
+        reconstructed_X = self.decoder_linear(y)
+
         y = self.mamdani(y)
 
-        return y
+        return y, reconstructed_X
 
 
 class SklearnAnfisWrapper(BaseEstimator, ClassifierMixin):
@@ -90,7 +104,7 @@ class SklearnAnfisWrapper(BaseEstimator, ClassifierMixin):
 
         # Use the model to get predictions
         with torch.no_grad():
-            y_pred= self.model(X)
+            y_pred= self.model(X)[0]
 
         if self.model.binary:
             y_pred = torch.sigmoid(y_pred)
@@ -105,7 +119,7 @@ class SklearnAnfisWrapper(BaseEstimator, ClassifierMixin):
         X = self._convert_to_tensor(X)
 
         with torch.no_grad():
-            y_pred = self.model(X)
+            y_pred = self.model(X)[0]
         
         if self.model.binary:
             y_pred = torch.sigmoid(y_pred)
@@ -147,6 +161,7 @@ class SklearnAnfisWrapper(BaseEstimator, ClassifierMixin):
 
     
 if __name__ == "__main__":
-    unfis = ANFIS(3, 5, 2)
+    anfis = ANFIS(3, 5, 2)
     X = torch.randn(100, 3)
-    print(unfis(X).shape)
+    y, recon = anfis(X)
+    print(y.shape, recon.shape)

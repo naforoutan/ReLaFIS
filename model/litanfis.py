@@ -61,7 +61,10 @@ class LitAnfis(nn.Module):
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
-        std = self.std.view(1, *self.std.shape)
+        # Clamp away from 0 (and negative): std is unconstrained and used as
+        # sigma**2 in the denominator below, so it can blow up the gradient
+        # into NaN (same failure mode fixed in GIFTSHIFTER).
+        std = self.std.clamp(min=1e-3).view(1, *self.std.shape)
 
         X = X.view(*X.shape, 1)
 
