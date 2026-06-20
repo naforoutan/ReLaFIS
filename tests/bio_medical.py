@@ -118,26 +118,91 @@ class SRBCT(Test):
 
 
 class Madelon(Test):
-    """Madelon dataset from local ARFF file (sparse format)."""
+    """Madelon dataset from local ARFF file (sparse format).
+    
+    2600 samples, 500 features, binary classification.
+    Uses scipy.io.arff for reliable parsing.
+    """
 
     def __init__(self, *args, **kwargs) -> None:
-        df, _, _ = parse_sparse_arff("./data/madelon.arff")
-
-        self.df = df.fillna(0)
-        self.target = "target"
+        from scipy.io import arff
+        
+        data, meta = arff.loadarff("./data/madelon.arff")
+        
+        # Convert to DataFrame and decode bytes
+        df = pd.DataFrame(data)
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].apply(lambda x: x.decode() if isinstance(x, bytes) else x)
+        
+        # Separate features and target
+        self.df = df.iloc[:, :-1]  # All columns except last are features
+        self.target = df.iloc[:, -1].astype(int if df.iloc[:, -1].str.isnumeric().all() else str)  # Last column is target
+        
+        # Map string classes '1' and '2' to 0 and 1 if needed
+        if self.target.dtype == object:
+            unique_vals = self.target.unique()
+            if len(unique_vals) == 2:
+                # Binary classification: map to 0 and 1
+                mapping = {unique_vals[0]: 0, unique_vals[1]: 1}
+                self.target = self.target.map(mapping)
 
         super().__init__(*args, **kwargs)
+
 
 class ORL(Test):
-    """AT&T dataset from local ARFF file (sparse format)."""
-
     def __init__(self, *args, **kwargs) -> None:
-        df, _, _ = parse_sparse_arff("./data/AT&T.arff")
+        from scipy.io import arff
 
-        self.df = df.fillna(0)
-        self.target = "target"
+        data, meta = arff.loadarff("./data/AT&T.arff")
+
+        df = pd.DataFrame(data)
+
+        # convert bytes → int/str if needed
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].apply(
+                    lambda x: x.decode() if isinstance(x, bytes) else x
+                )
+
+        self.df = df.iloc[:, :-1]
+        self.target = df.iloc[:, -1].astype(int)
+
+        print(f"✅ ORL loaded correctly: {self.df.shape}")
 
         super().__init__(*args, **kwargs)
+
+
+class Isolet(Test):
+    """ISOLET dataset from local ARFF file.
+
+    617 features, 26 classes, one line per example.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        data, meta = arff.loadarff("./data/Isolet.arff")
+        df = pd.DataFrame(data)
+
+        # Convert bytes to native Python strings for all object columns
+        for col in df.columns:
+            if df[col].dtype == object:
+                df[col] = df[col].apply(
+                    lambda x: x.decode() if isinstance(x, bytes) else x
+                )
+
+        self.df = df.iloc[:, :-1]
+        self.target = df.iloc[:, -1]
+
+        # Convert quoted numeric class labels like '1'..'26' to integers
+        try:
+            self.target = self.target.astype(int)
+        except (ValueError, TypeError):
+            pass
+
+        print(f"✅ Isolet loaded: {self.df.shape[0]} samples, {self.df.shape[1]} features, {self.target.nunique()} classes")
+
+        super().__init__(*args, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Future slots — add below as you test new papers
@@ -243,9 +308,6 @@ def parse_sparse_arff(filepath):
     df['target'] = y
     
     return df, feature_names, y
-
-
-
 
 
 def load_csv_with_error_handling(filepath, **kwargs):

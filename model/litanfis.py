@@ -79,9 +79,23 @@ class LitAnfis(nn.Module):
         epsilon = 1e-10
         y = torch.log(y + epsilon)
 
+        # FIX (same issue as GIFTSHIFTER): firing strength was the PRODUCT
+        # of per-feature memberships (sum in log-space) over dim=1 =
+        # in_features. For high-dimensional data (e.g. 617 features on
+        # Isolet), multiplying hundreds of numbers in (0, 1] makes every
+        # rule's firing strength numerically degenerate (vanishingly small
+        # and nearly identical across rules/inputs, even though the
+        # log-sum-exp trick prevents literal underflow to 0.0). This makes
+        # the firing strengths uninformative regardless of X, so the model
+        # collapses to predicting a near-constant output.
+        #
+        # Using the geometric MEAN instead of the product (mean instead of
+        # sum in log-space) keeps the same fuzzy-AND semantics but no
+        # longer shrinks with in_features, so it stays discriminative
+        # regardless of input dimensionality.
         max_log_y = torch.max(y, dim=1, keepdim=True)[0]
 
-        y = torch.sum(y - max_log_y, dim=1)
+        y = torch.mean(y - max_log_y, dim=1)
 
         y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
         

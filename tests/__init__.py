@@ -12,7 +12,7 @@ from .tabular_small import (
 )
 from .tabular_large import AdultIncome, BankMarketing, Smoke
 from .image import MNIST, FashionMNIST
-from .bio_medical import Diabetes, Digits_UCI_Repo
+from .bio_medical import Diabetes, Digits_UCI_Repo, Isolet
 
 __all__ = [
     "Iris", "Wine", "Glass", "Heart", "Haberman", "Thyroid",
@@ -21,7 +21,7 @@ __all__ = [
     "DNA", "Digits", "Digits_UCI", "Parkinson", "MFeat", "SyntheticGaussian",
     "AdultIncome", "BankMarketing", "Smoke",
     "MNIST", "FashionMNIST", "ORL",
-    "Diabetes", "Digits_UCI_Repo",
+    "Diabetes", "Digits_UCI_Repo", "Isolet",
 ]
 
 
