@@ -233,6 +233,16 @@ class Evaluator:
         # Switch to evaluation mode
         model.eval()
         
+        # Guard against silent NaN collapse: if training diverged (e.g. a
+        # parameter underflowed/blew up), predict()/predict_proba() will
+        # still "succeed" but produce NaN-derived, effectively-random output
+        # that gets silently accepted as a real data point below. Catch it
+        # here instead of letting it pollute the averaged results.
+        if any(torch.isnan(p).any() or torch.isinf(p).any() for p in model.parameters()):
+            print(f"Warning: model diverged to NaN/Inf (run {run_id}, noise_std={noise_std}) — recording as failed run")
+            wrapper = wrapper_class(model, device=self.device)
+            return 0.0, 0.0, 0.0, 0.0, wrapper
+        
         # Create wrapper with trained model
         wrapper = wrapper_class(model, device=self.device)
         
@@ -260,8 +270,17 @@ class Evaluator:
                     train_auc = roc_auc_score(self.y_train, train_proba[:, 1])
                     test_auc = roc_auc_score(self.y_test, test_proba[:, 1])
                 else:
-                    train_auc = roc_auc_score(self.y_train, train_proba, multi_class='ovr')
-                    test_auc = roc_auc_score(self.y_test, test_proba, multi_class='ovr')
+                    # For multiclass, check if we have enough classes in both train and test sets
+                    all_classes = np.unique(np.concatenate([self.y_train, self.y_test]))
+                    train_classes = len(np.unique(self.y_train))
+                    test_classes = len(np.unique(self.y_test))
+                    
+                    if train_classes > 1 and test_classes > 1:
+                        train_auc = roc_auc_score(self.y_train, train_proba, multi_class='ovr', labels=all_classes)
+                        test_auc = roc_auc_score(self.y_test, test_proba, multi_class='ovr', labels=all_classes)
+                    else:
+                        train_auc = np.nan
+                        test_auc = np.nan
                     
             except Exception as e:
                 print(f"Warning: Could not compute AUC - {e}")

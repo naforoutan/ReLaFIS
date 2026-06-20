@@ -66,7 +66,15 @@ class GIFTSHIFTER(nn.Module):
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
-        std = F.softplus(self.std).view(1, *self.std.shape)
+        # Clamp softplus(std) away from 0. softplus(std) can underflow to exactly
+        # 0.0 in float32 once `std` drifts to large negative values (nothing
+        # constrains it during training). Since std appears as sigma**2 in the
+        # denominator of the Gaussian membership function below, an
+        # unclamped near-zero sigma causes the forward value and gradient to
+        # blow up, which pushes std even further negative — a runaway
+        # feedback loop that crashes the whole model to NaN within a few
+        # steps. A real floor (not just a tiny epsilon) breaks that loop.
+        std = F.softplus(self.std).clamp(min=1e-3).view(1, *self.std.shape)
         
         X = X.view(*X.shape, 1)
 
@@ -161,7 +169,11 @@ class GIFTSHIFTER(nn.Module):
 
         X64      = X.double()
         means64  = self.mean.double() 
-        phi64    = F.softplus(self.std).double()
+        # Same floor as encode(): softplus(std) can underflow to 0 in float32,
+        # and phi64 is used as a divisor below, so an unclamped near-zero
+        # value causes exploding gradients that drive std further negative
+        # (runaway → NaN). Match the clamp used in encode() for consistency.
+        phi64    = F.softplus(self.std).clamp(min=1e-3).double()
         slopes64 = self.local_slopes.double()
         biases64 = self.local_biases.double()
         y64      = y.double()
@@ -244,8 +256,8 @@ class GIFTSHIFTER(nn.Module):
                 "slope_std":   self.local_slopes.std().item(),
                 "bias_mean":   self.local_biases.mean().item(),
                 "center_mean": self.mean.mean().item(),
-                "phi_mean":    F.softplus(self.std).mean().item(),
-                "phi_std":     F.softplus(self.std).std().item(),
+                "phi_mean":    F.softplus(self.std).clamp(min=1e-3).mean().item(),
+                "phi_std":     F.softplus(self.std).clamp(min=1e-3).std().item(),
             }
         return stats
 

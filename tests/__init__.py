@@ -11,7 +11,7 @@ from .tabular_small import (
     MFeat, SyntheticGaussian,
 )
 from .tabular_large import AdultIncome, BankMarketing, Smoke
-from .image import MNIST, FashionMNIST, ORL
+from .image import MNIST, FashionMNIST
 from .bio_medical import Diabetes, Digits_UCI_Repo
 
 __all__ = [

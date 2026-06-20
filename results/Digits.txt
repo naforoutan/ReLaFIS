@@ -1,0 +1,58 @@
+
+============================================================
+🔇 NOISE IS DISABLED - Clean data evaluation only
+============================================================
+Noise levels:   0%|          | 0/1 [00:00<?, ?it/s]
+
+==================================================
+Testing: CLEAN DATA (σ = 0)
+==================================================
+
+Training GIFTSHIFTER...
+  Run 1/5... Acc=0.9611
+  Run 2/5... Acc=0.9583
+  Run 3/5... Acc=0.9583
+  Run 4/5... Acc=0.9556
+  Run 5/5... Acc=0.9639
+
+Training LITANFIS...
+  Run 1/5... Acc=0.9611
+  Run 2/5... Acc=0.9556
+  Run 3/5... Acc=0.9639
+  Run 4/5... Acc=0.9583
+  Run 5/5... Acc=0.9556
+
+Training GIFTSHIFT...
+  Run 1/5... Acc=0.9639
+  Run 2/5... Acc=0.9611
+  Run 3/5... Acc=0.9639
+  Run 4/5... Acc=0.9639
+  Run 5/5... 
+Noise levels: 100%|██████████| 1/1 [02:44<00:00, 164.30s/it]
+Acc=0.9639
+
+================================================================================
+MODEL EVALUATION REPORT
+Dataset: Digits
+Noise Enabled: False
+Number of runs per configuration: 5
+================================================================================
+
+📊 PERFORMANCE SUMMARY:
+--------------------------------------------------------------------------------
+Model           Noise σ    Test Acc ± Std       Test AUC ± Std      
+--------------------------------------------------------------------------------
+GIFTSHIFTER     Clean      0.9594 ± 0.0028    0.9984 ± 0.0002
+LITANFIS        Clean      0.9589 ± 0.0032    0.9985 ± 0.0002
+GIFTSHIFT       Clean      0.9633 ± 0.0011    0.9987 ± 0.0001
+
+🏆 VERDICT:
+--------------------------------------------------------------------------------
+✅ BEST MODEL: GIFTSHIFT
+📝 Reason: GIFTSHIFT has the highest combined accuracy+AUC on clean data (Acc=0.9633, AUC=0.9987)
+
+Clean-data performance summary:
+  • GIFTSHIFTER: Acc=0.9594 ± 0.0028, AUC=0.9984 ± 0.0002
+  • LITANFIS: Acc=0.9589 ± 0.0032, AUC=0.9985 ± 0.0002
+  • GIFTSHIFT: Acc=0.9633 ± 0.0011, AUC=0.9987 ± 0.0001
+================================================================================
