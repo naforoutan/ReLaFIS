@@ -135,6 +135,46 @@ class UNFIS(nn.Module):
             return 0.0, entropies
         return 0.0
 
+    def relaxation_rate(self, per_rule: bool = False):
+        """
+        Relaxation rate — how much each rule's antecedent leans on the
+        relaxation gate ζ = sigmoid(s) rather than the raw Gaussian
+        membership it's blended with:
+
+            y = (mu + eps) / ((1 - zeta) * mu + zeta + eps)
+
+        As zeta -> 1 a term is fully relaxed ("don't care", y -> ~1
+        regardless of x); as zeta -> 0 the term is fully committed to
+        the raw Gaussian membership. This is a genuine, learned
+        relaxation mechanism (unlike a classical ANFIS rule, or a
+        purely relational equal/not-equal gate like LitAnfis's
+        `literal`, neither of which has any "don't care" knob at all).
+
+        self.s has shape (1, in_features, rules). For rule r, the
+        per-rule relaxation rate is
+
+            rate_r = (1/n) * sum_i zeta_{i,r},   n = in_features
+
+        i.e. the mean of zeta over features for that rule. The overall
+        scalar is the mean of rate_r over all rules.
+
+        Returns
+        -------
+        float
+            Mean relaxation rate across rules, in [0, 1].
+        per_rule : bool
+            If True, also return the per-rule rate tensor of shape
+            (rules_count,), as (mean, per_rule_rate).
+        """
+        with torch.no_grad():
+            zeta = torch.sigmoid(self.s).squeeze(0)  # (in_features, rules)
+            per_rule_rate = zeta.mean(dim=0)  # sum_i zeta / n, shape (rules,)
+            mean_rate = per_rule_rate.mean().item()
+
+        if per_rule:
+            return mean_rate, per_rule_rate
+        return mean_rate
+
     def forward(self, X):
         y = self.encode(X)
 
@@ -153,11 +193,20 @@ class UNFIS(nn.Module):
         with torch.no_grad():
             zeta = torch.sigmoid(self.s)
 
+            relaxation_rate_mean, relaxation_rate_per_rule = self.relaxation_rate(per_rule=True)
+
             stats = {
                 # Always 0.0 for UNFIS — see linguistic_richness() docstring.
                 # Reported here for direct comparison against other model
                 # classes on the same absolute scale.
                 "linguistic_richness": self.linguistic_richness(),
+                # Relaxation rate — mean of zeta (the "don't care" gate)
+                # per rule, then averaged over rules. See
+                # relaxation_rate() docstring; reported both as the
+                # scalar average and per-rule below.
+                "relaxation_rate": relaxation_rate_mean,
+                "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
+                "relaxation_rate_per_rule_std": relaxation_rate_per_rule.std().item(),
                 "zeta_mean": zeta.mean().item(),
                 "zeta_std": zeta.std().item(),
                 "zeta_saturation": ((zeta < 0.1) | (zeta > 0.9)).float().mean().item(),

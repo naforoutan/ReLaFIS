@@ -309,6 +309,63 @@ class GIFTSHIFTER(nn.Module):
                 category, self.rules_count, self.in_features, per_rule=per_rule
             )
 
+    def relaxation_rate(self, per_rule: bool = False):
+        """
+        Relaxation rate for GIFTSHIFTER.
+
+        This is the same r_{i,j} consequent-relaxation coefficient
+        used inside tsk() (see its docstring), computed standalone
+        here since r depends only on the model's parameters
+        (`literal`, `temp`, `comb_weight`), not on X:
+
+            alpha1 = sigmoid(literal)         Gaussian branch commitment
+            alpha2 = sigmoid(temp)            relational branch commitment
+            beta   = sigmoid(comb_weight)     Gaussian vs relational mix
+
+            H1_{i,j} = -alpha1*log(alpha1) / (1/e)   in [0, 1]
+            H2_{i,j} = -alpha2*log(alpha2) / (1/e)   in [0, 1]
+            r_{i,j}  = beta * H1_{i,j} + (1 - beta) * H2_{i,j}
+
+        r is highest when the *active* branch (per beta) has alpha
+        near 0 (barely committed -> heavily relaxed) and lowest when
+        alpha -> 1 (fully committed). This is a genuine "don't care"
+        relaxation mechanism, unlike LitAnfis's `literal`, which only
+        ever picks between two committed relations (equal/not-equal)
+        and has no relaxed/uncommitted state.
+
+        For rule i, the per-rule relaxation rate is
+
+            rate_i = (1/n) * sum_j r_{i,j},   n = in_features
+
+        and the overall scalar is the mean of rate_i over all rules.
+
+        Returns
+        -------
+        float
+            Mean relaxation rate across rules, in [0, 1].
+        per_rule : bool
+            If True, also return the per-rule rate tensor of shape
+            (rules_count,), as (mean, per_rule_rate).
+        """
+        with torch.no_grad():
+            eps = 1e-10
+            one_over_e = 1.0 / torch.e
+
+            alpha1 = torch.sigmoid(self.literal)     # (in_features, rules)
+            alpha2 = torch.sigmoid(self.temp)         # (in_features, rules)
+            beta = torch.sigmoid(self.comb_weight)    # (in_features, rules)
+
+            H1 = -(alpha1 * torch.log(alpha1 + eps)) / one_over_e
+            H2 = -(alpha2 * torch.log(alpha2 + eps)) / one_over_e
+            r = beta * H1 + (1.0 - beta) * H2          # (in_features, rules)
+
+            per_rule_rate = r.mean(dim=0)  # sum_j r / n, shape (rules,)
+            mean_rate = per_rule_rate.mean().item()
+
+        if per_rule:
+            return mean_rate, per_rule_rate
+        return mean_rate
+
     def get_interpretable_params(self):
         with torch.no_grad():
             literal = torch.sigmoid(self.literal)   # α₁
@@ -322,6 +379,7 @@ class GIFTSHIFTER(nn.Module):
             r  = beta * H1 + (1.0 - beta) * H2 
 
             linguistic_richness_mean, linguistic_richness_per_rule = self.linguistic_richness(per_rule=True)
+            relaxation_rate_mean, relaxation_rate_per_rule = self.relaxation_rate(per_rule=True)
 
             stats = {
                 # Linguistic richness - entropy (nats) of the 4 dominant
@@ -331,6 +389,14 @@ class GIFTSHIFTER(nn.Module):
                 # rules that mix all 4 relation types evenly.
                 "linguistic_richness": linguistic_richness_mean,
                 "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
+                # Relaxation rate — mean of the per-feature, per-rule
+                # consequent relaxation coefficient r_{i,j} (see
+                # relaxation_rate() docstring), averaged over features
+                # per rule and then over rules. Reported both as the
+                # scalar average and per-rule below.
+                "relaxation_rate": relaxation_rate_mean,
+                "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
+                "relaxation_rate_per_rule_std": relaxation_rate_per_rule.std().item(),
                 # α₁ - Gaussian branch participation
                 "alpha1_mean": literal.mean().item(),
                 "alpha1_std":  literal.std().item(),
