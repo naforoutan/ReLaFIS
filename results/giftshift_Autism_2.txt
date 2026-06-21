@@ -1,0 +1,34 @@
+Experiment Result Autism
+------ train ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000       410
+           1     1.0000    1.0000    1.0000       150
+
+    accuracy                         1.0000       560
+   macro avg     1.0000    1.0000    1.0000       560
+weighted avg     1.0000    1.0000    1.0000       560
+AUC	1.0
+------ test ------
+              precision    recall  f1-score   support
+
+           0     0.9906    1.0000    0.9953       105
+           1     1.0000    0.9744    0.9870        39
+
+    accuracy                         0.9931       144
+   macro avg     0.9953    0.9872    0.9911       144
+weighted avg     0.9931    0.9931    0.9930       144
+AUC	1.0
+{'binary': True,
+ 'drop_out_p': 0.3,
+ 'in_features': 35,
+ 'out_features': 2,
+ 'rules': 2}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 560}

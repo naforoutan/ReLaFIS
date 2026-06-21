@@ -12,6 +12,14 @@ class GIFTSHIFT(nn.Module):
     GIFT: Gaussian with Integrated Fuzzy Transformation
     Uses sigmoid for "greater than mu" and its negation for "less than mu"
     """
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute scale used across every model in this codebase (equal /
+    # not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). GIFTSHIFT has the same two-branch
+    # antecedent as GIFTSHIFTER (literal/temp/comb_weight), so it can
+    # actually reach all 4 categories.
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -69,7 +77,15 @@ class GIFTSHIFT(nn.Module):
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
-        std = F.softplus(self.std).view(1, *self.std.shape)
+        # FIX (same issue as GIFTSHIFTER): softplus(std) can underflow to
+        # exactly 0.0 in float32 once `std` drifts to large negative values
+        # (nothing constrains it during training). Since std appears as
+        # sigma**2 in the denominator of the Gaussian membership function
+        # below, an unclamped near-zero sigma causes the forward value and
+        # gradient to blow up, which pushes std even further negative — a
+        # runaway feedback loop that crashes the model to NaN within a few
+        # steps. A real floor (not just a tiny epsilon) breaks that loop.
+        std = F.softplus(self.std).clamp(min=1e-3).view(1, *self.std.shape)
         
         X = X.view(*X.shape, 1)
 
@@ -150,13 +166,58 @@ class GIFTSHIFT(nn.Module):
         return weighted_outputs.sum(dim=1) 
     
 
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric — ABSOLUTE scale.
+
+        GIFTSHIFT's antecedent has the same two-branch structure as
+        GIFTSHIFTER (Gaussian equal/not-equal branch, mixed via β with a
+        sigmoidal greater/less branch), so it is scored on the same
+        SHARED 4-category support used by every model in this codebase
+        (see `linguistic_richness_utils.py`):
+
+            0: equal           (β dominates,   α₁ = sigmoid(literal) ≥ 0.5)
+            1: not-equal       (β dominates,   α₁ = sigmoid(literal) <  0.5)
+            2: greater-than    (1-β dominates, α₂ = sigmoid(temp)    ≥ 0.5)
+            3: less-than       (1-β dominates, α₂ = sigmoid(temp)    <  0.5)
+
+        Returns
+        -------
+        float
+            Mean entropy across rules (nats), in [0, log(4)].
+        per_rule : bool
+            If True, also return the per-rule entropy tensor of shape
+            (rules_count,) alongside the scalar mean, as (mean, per_rule_H).
+        """
+        with torch.no_grad():
+            from utils.linguistic_richness import categories_from_two_branch, richness_from_categories
+
+            alpha1 = torch.sigmoid(self.literal)      # equal vs not-equal
+            alpha2 = torch.sigmoid(self.temp)          # greater vs less
+            beta   = torch.sigmoid(self.comb_weight)   # Gaussian vs relational
+
+            category = categories_from_two_branch(alpha1, alpha2, beta)
+
+            return richness_from_categories(
+                category, self.rules_count, self.in_features, per_rule=per_rule
+            )
+
     def get_interpretable_params(self):
         with torch.no_grad():
             literal = torch.sigmoid(self.literal)
             temp = torch.sigmoid(self.temp)
             weight = torch.sigmoid(self.comb_weight)
 
+            linguistic_richness_mean, linguistic_richness_per_rule = self.linguistic_richness(per_rule=True)
+
             stats = {
+                # Linguistic richness - entropy (nats) computed on the
+                # SHARED 4-category support (equal / not-equal / greater /
+                # less) used by every model class in this codebase, so
+                # this number is directly comparable across models without
+                # any per-model renormalization.
+                "linguistic_richness": linguistic_richness_mean,
+                "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
                 "literal_mean": literal.mean().item(),
                 "literal_std": literal.std().item(),
                 "temp_mean": temp.mean().item(),

@@ -8,6 +8,16 @@ import pandas as pd
 
 
 class UNFIS(nn.Module):
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute scale used across every model in this codebase (equal /
+    # not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). Kept at 4 for comparability even
+    # though UNFIS structurally never leaves category 0 (see
+    # linguistic_richness() below) — its `s` parameter is a relaxation
+    # gate that softens the Gaussian membership toward uniform, not an
+    # equal/not-equal or greater/less relational gate.
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool = False,
                  drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
@@ -61,7 +71,21 @@ class UNFIS(nn.Module):
 
         max_log_y = torch.max(y, dim=1, keepdim=True)[0]
 
-        y = torch.sum(y - max_log_y, dim=1)  # Subtract max for numerical stability
+        # FIX (same issue as GIFTSHIFTER / LitAnfis / GIFTSHIFT / ANFIS):
+        # firing strength was the PRODUCT of per-feature memberships (sum
+        # in log-space) over dim=1 = in_features. For high-dimensional data
+        # (e.g. 617 features on Isolet), multiplying hundreds of numbers in
+        # (0, 1] makes every rule's firing strength numerically degenerate
+        # (vanishingly small and nearly identical across rules/inputs, even
+        # though the log-sum-exp trick prevents literal underflow to 0.0).
+        # This makes the firing strengths uninformative regardless of X, so
+        # the model collapses to predicting a near-constant output.
+        #
+        # Using the geometric MEAN instead of the product (mean instead of
+        # sum in log-space) keeps the same fuzzy-AND semantics but no
+        # longer shrinks with in_features, so it stays discriminative
+        # regardless of input dimensionality.
+        y = torch.mean(y - max_log_y, dim=1)
 
         y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
 
@@ -75,6 +99,41 @@ class UNFIS(nn.Module):
         X = X * y
 
         return X.sum(dim=1)
+
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric — ABSOLUTE scale, structural zero.
+
+        UNFIS's `s` parameter (via ζ = sigmoid(s)) is a RELAXATION gate:
+        it softens the Gaussian membership toward a uniform value
+        (y → 1, "don't care") as ζ → 1, and leaves it as a plain
+        "equal to mu" Gaussian membership as ζ → 0. It does not introduce
+        an equal/not-equal distinction (there's no negated branch like
+        LitAnfis's `literal`) or a greater/less distinction (no `temp`
+        like GIFTSHIFT/GIFTSHIFTER). So every linguistic term always
+        expresses the SAME single category ("equal to mu", possibly
+        relaxed/softened) on the shared 4-category support used across
+        this codebase (see `linguistic_richness_utils.py`).
+
+        As with ANFIS, every (feature, rule) entry therefore falls into
+        exactly one category with probability 1, so the Shannon entropy
+        of the per-rule distribution is exactly 0 — a real structural
+        result, not a degenerate/undertrained one, reported as 0.0
+        (not NaN) for direct comparison on the same absolute scale.
+
+        Returns
+        -------
+        float
+            Always 0.0.
+        per_rule : bool
+            If True, also return a per-rule zero tensor of shape
+            (rules_count,), as (0.0, per_rule_H).
+        """
+        with torch.no_grad():
+            entropies = torch.zeros(self.rules_count, dtype=torch.float64, device=self.mean.device)
+        if per_rule:
+            return 0.0, entropies
+        return 0.0
 
     def forward(self, X):
         y = self.encode(X)
@@ -95,6 +154,10 @@ class UNFIS(nn.Module):
             zeta = torch.sigmoid(self.s)
 
             stats = {
+                # Always 0.0 for UNFIS — see linguistic_richness() docstring.
+                # Reported here for direct comparison against other model
+                # classes on the same absolute scale.
+                "linguistic_richness": self.linguistic_richness(),
                 "zeta_mean": zeta.mean().item(),
                 "zeta_std": zeta.std().item(),
                 "zeta_saturation": ((zeta < 0.1) | (zeta > 0.9)).float().mean().item(),

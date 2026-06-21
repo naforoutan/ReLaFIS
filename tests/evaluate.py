@@ -52,7 +52,7 @@ class Evaluator:
         self.results = {}
         for model_name in model_configs.keys():
             self.results[model_name] = {
-                nl: {'train_acc': [], 'test_acc': [], 'train_auc': [], 'test_auc': []} 
+                nl: {'train_acc': [], 'test_acc': [], 'train_auc': [], 'test_auc': [], 'linguistic_richness': []}
                 for nl in self.noise_levels
             }
         
@@ -150,10 +150,26 @@ class Evaluator:
                            wrapper_class: Type,
                            noise_std: float, 
                            run_id: int,
-                           run_seed: int = 42) -> Tuple[float, float, float, float, Any]:
+                           run_seed: int = 42) -> Tuple[float, float, float, float, float, Any]:
         """
         Train and evaluate a single model with given noise level
-        Returns: (train_acc, test_acc, train_auc, test_auc, trained_wrapper)
+        Returns: (train_acc, test_acc, train_auc, test_auc, linguistic_richness, trained_wrapper)
+
+        linguistic_richness is the mean per-rule entropy (in nats), computed
+        on the SAME shared 4-category support (equal / not-equal /
+        greater-than / less-than — see linguistic_richness_utils.py) for
+        every model class that exposes `model.linguistic_richness()`
+        (ANFIS, UNFIS, GRIFFIN, LitAnfis, GIFTSHIFT, GIFTSHIFTER all do).
+        Because the support is shared, the value is directly comparable
+        across model classes without renormalization:
+          - ANFIS / UNFIS have no relational gate at all -> structurally 0.0
+          - LitAnfis / GRIFFIN have only an equal/not-equal gate ->
+            structurally capped at log(2) ~= 0.693
+          - GIFTSHIFT / GIFTSHIFTER have both branches -> can reach log(4)
+        It is np.nan only for model classes that don't define the method
+        at all, or when training diverged to NaN/Inf (see the guard below),
+        since 0.0 there would misleadingly read as "rich but degenerate"
+        rather than "not applicable" / "failed run".
         """
         # Add noise to data
         X_train_noisy = self._apply_noise(self.X_train, noise_std, self.noise_type)
@@ -279,10 +295,25 @@ class Evaluator:
         if any(torch.isnan(p).any() or torch.isinf(p).any() for p in model.parameters()):
             print(f"Warning: model diverged to NaN/Inf (run {run_id}, noise_std={noise_std}) — recording as failed run")
             wrapper = wrapper_class(model, device=self.device)
-            return 0.0, 0.0, 0.0, 0.0, wrapper
+            return 0.0, 0.0, 0.0, 0.0, np.nan, wrapper
         
         # Create wrapper with trained model
         wrapper = wrapper_class(model, device=self.device)
+        
+        # Linguistic richness: every model class in this codebase now
+        # exposes model.linguistic_richness() on the shared 4-category
+        # scale (ANFIS/UNFIS report a structural 0.0; LitAnfis/GRIFFIN are
+        # capped at log(2); GIFTSHIFT/GIFTSHIFTER can reach log(4)). NaN is
+        # reserved for model classes that genuinely don't define the
+        # method, or if computing it raises for some other reason.
+        if hasattr(model, 'linguistic_richness'):
+            try:
+                linguistic_richness = model.linguistic_richness()
+            except Exception as e:
+                print(f"Warning: Could not compute linguistic_richness - {e}")
+                linguistic_richness = np.nan
+        else:
+            linguistic_richness = np.nan
         
         # Evaluation
         try:
@@ -340,7 +371,7 @@ class Evaluator:
             print(f"Error during evaluation: {e}")
             train_acc, test_acc, train_auc, test_auc = 0.0, 0.0, 0.0, 0.0
             
-        return train_acc, test_acc, train_auc, test_auc, wrapper
+        return train_acc, test_acc, train_auc, test_auc, linguistic_richness, wrapper
     
     def evaluate(self, verbose: bool = True) -> pd.DataFrame:
         """
@@ -403,7 +434,7 @@ class Evaluator:
                     if torch.cuda.is_available():
                         torch.cuda.manual_seed_all(run_seed)
                     
-                    train_acc, test_acc, train_auc, test_auc, wrapper = self._train_and_evaluate(
+                    train_acc, test_acc, train_auc, test_auc, linguistic_richness, wrapper = self._train_and_evaluate(
                         config['model_class'],
                         model_params,
                         config['wrapper_class'],
@@ -413,12 +444,14 @@ class Evaluator:
                     )
                     
                     if verbose:
-                        print(f"Acc={test_acc:.4f}")
+                        lr_str = f", LingRich={linguistic_richness:.4f}" if not np.isnan(linguistic_richness) else ""
+                        print(f"Acc={test_acc:.4f}{lr_str}")
                     
                     self.results[model_name][noise_std]['train_acc'].append(train_acc)
                     self.results[model_name][noise_std]['test_acc'].append(test_acc)
                     self.results[model_name][noise_std]['train_auc'].append(train_auc)
                     self.results[model_name][noise_std]['test_auc'].append(test_auc)
+                    self.results[model_name][noise_std]['linguistic_richness'].append(linguistic_richness)
                     
                     results_summary.append({
                         'model': model_name,
@@ -427,7 +460,8 @@ class Evaluator:
                         'train_acc': train_acc,
                         'test_acc': test_acc,
                         'train_auc': train_auc,
-                        'test_auc': test_auc
+                        'test_auc': test_auc,
+                        'linguistic_richness': linguistic_richness
                     })
         
         return pd.DataFrame(results_summary)
@@ -440,6 +474,18 @@ class Evaluator:
             for noise_std in self.noise_levels:
                 stats = self.results[model_name][noise_std]
                 if len(stats['test_acc']) > 0:
+                    # linguistic_richness is NaN for model classes that don't
+                    # define it (e.g. plain ANFIS/LitAnfis/GRIFFIN). Use
+                    # nan-safe aggregation so a non-applicable model doesn't
+                    # turn the whole column into NaN; if EVERY run is NaN
+                    # (metric truly not applicable for this model), keep NaN.
+                    lr_values = stats['linguistic_richness']
+                    if len(lr_values) > 0 and not all(np.isnan(v) for v in lr_values):
+                        lr_mean = np.nanmean(lr_values)
+                        lr_std = np.nanstd(lr_values)
+                    else:
+                        lr_mean, lr_std = np.nan, np.nan
+                    
                     summary.append({
                         'model': model_name,
                         'noise_std': noise_std,
@@ -450,7 +496,9 @@ class Evaluator:
                         'train_auc_mean': np.mean(stats['train_auc']),
                         'train_auc_std': np.std(stats['train_auc']),
                         'test_auc_mean': np.mean(stats['test_auc']),
-                        'test_auc_std': np.std(stats['test_auc'])
+                        'test_auc_std': np.std(stats['test_auc']),
+                        'linguistic_richness_mean': lr_mean,
+                        'linguistic_richness_std': lr_std
                     })
         
         return pd.DataFrame(summary)
@@ -714,17 +762,22 @@ class Evaluator:
         summary_df = self.get_summary_statistics()
         if len(summary_df) > 0:
             print("\n📊 PERFORMANCE SUMMARY:")
-            print("-"*80)
-            print(f"{'Model':<15} {'Noise σ':<10} {'Test Acc ± Std':<20} {'Test AUC ± Std':<20}")
-            print("-"*80)
+            print("-"*98)
+            print(f"{'Model':<15} {'Noise σ':<10} {'Test Acc ± Std':<20} {'Test AUC ± Std':<20} {'Ling. Richness ± Std':<22}")
+            print("-"*98)
             
             for model_name in self.model_configs.keys():
                 model_data = summary_df[summary_df['model'] == model_name]
                 for _, row in model_data.iterrows():
                     noise_label = f"{row['noise_std']:.2f}" if self.use_noise else "Clean"
+                    if np.isnan(row['linguistic_richness_mean']):
+                        lr_label = "N/A"
+                    else:
+                        lr_label = f"{row['linguistic_richness_mean']:.4f} ± {row['linguistic_richness_std']:.4f}"
                     print(f"{model_name.upper():<15} {noise_label:<10} "
                           f"{row['test_acc_mean']:.4f} ± {row['test_acc_std']:.4f}    "
-                          f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}")
+                          f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}    "
+                          f"{lr_label:<22}")
         else:
             print("\n⚠️ No results available. Run evaluate() first.")
             return
@@ -741,6 +794,39 @@ class Evaluator:
                     print(f"  • AUC Score:      {scores['auc_robustness_score']:.4f}")
                     print(f"  • Combined Score: {scores['combined_score']:.4f}")
                     print(f"  • Baseline (clean): Acc={scores['baseline_acc']:.4f}, AUC={scores['baseline_auc']:.4f}")
+        
+        # Linguistic richness: descriptive only (not folded into best-model
+        # selection), shown on the clean-data (noise_std == 0) split for the
+        # subset of models that expose model.linguistic_richness().
+        #
+        # As of this version, EVERY model class computes its richness on
+        # the SAME shared 4-category support (equal / not-equal /
+        # greater-than / less-than — see linguistic_richness_utils.py),
+        # so the raw nats value H is now directly comparable across model
+        # classes with no per-model renormalization needed. A model with
+        # no relational (greater/less) branch (LitAnfis, GRIFFIN) is
+        # structurally capped at log(2) ≈ 0.693; a model with no
+        # relational gate at all (ANFIS, UNFIS) is structurally fixed at
+        # H = 0.0. Both are real, comparable consequences of the
+        # architecture, not scale artifacts — that's the point of using
+        # a shared support instead of grading each model on its own curve.
+        #
+        # The shared ceiling log(4) ≈ 1.386 is the same for every model
+        # and is shown once at the top of the report rather than per row.
+        clean_lr = summary_df[summary_df['noise_std'] == 0] if self.use_noise else summary_df
+        clean_lr = clean_lr.dropna(subset=['linguistic_richness_mean'])
+        if len(clean_lr) > 0:
+            shared_ceiling = np.log(4)
+            print("\n📖 LINGUISTIC RICHNESS (clean data, higher = more relational diversity per rule):")
+            print(f"    Shared absolute scale across ALL models — ceiling = log(4) = {shared_ceiling:.4f} nats.")
+            print("    H is directly comparable between models; no per-model renormalization.")
+            print("-"*80)
+            for _, row in clean_lr.sort_values('linguistic_richness_mean', ascending=False).iterrows():
+                pct_mean = 100 * row['linguistic_richness_mean'] / shared_ceiling
+                pct_std = 100 * row['linguistic_richness_std'] / shared_ceiling
+                print(f"  • {row['model'].upper():<15} "
+                      f"H = {row['linguistic_richness_mean']:.4f} ± {row['linguistic_richness_std']:.4f} nats  "
+                      f"({pct_mean:5.1f}% ± {pct_std:4.1f}% of shared ceiling)")
         
         best_model, details = self.get_best_model()
         print("\n🏆 VERDICT:")

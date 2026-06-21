@@ -8,6 +8,17 @@ import pandas as pd
 
 
 class LitAnfis(nn.Module):
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute 4-category scale used across every model in this codebase
+    # (equal / not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). LitAnfis has no relational
+    # greater/less branch, so it structurally only ever populates 2 of
+    # these 4 categories — its richness is therefore capped at log(2),
+    # not because of a different scale, but because of a real
+    # architectural limitation, which is exactly what makes the number
+    # directly comparable against models that do reach log(4).
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -109,12 +120,79 @@ class LitAnfis(nn.Module):
         X = X * y
 
         return X.sum(dim=1)
-    
+
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric (LitAnfis variant) — ABSOLUTE scale.
+
+        Unlike GIFTSHIFTER, LitAnfis's antecedent has only the Gaussian
+        branch (`mean`, `std`, `literal`) — there is no relational
+        (greater-than / less-than) branch and no β mixing coefficient.
+
+        IMPORTANT: this is computed on the SAME shared 4-category support
+        used by every model in this codebase (see
+        `linguistic_richness_utils.py`), NOT on a LitAnfis-only 2-category
+        support. The 4 categories are:
+
+            0: equal
+            1: not-equal
+            2: greater-than
+            3: less-than
+
+        LitAnfis structurally never populates categories 2/3 (it has no
+        relational branch to express them), so its per-rule distribution
+        always has zero mass there. That is not a normalization choice —
+        it is a real, absolute consequence of the architecture, and it is
+        exactly what makes the resulting number comparable across models:
+        a LitAnfis rule can score at most log(2) ≈ 0.693 on this shared
+        log(4) ≈ 1.386 scale, while a GIFTSHIFTER/GIFTSHIFT rule that
+        actually spreads across all 4 categories can score up to log(4).
+        That gap IS the richness gap — no per-model renormalization needed.
+
+        For each rule i we hard-assign every one of the n=in_features terms
+        to whichever of the 2 reachable categories it dominantly expresses,
+        count how many features land in each, and form the empirical
+        distribution p_r = n_r / n over all 4 categories (0 for r=2,3).
+        The Shannon entropy H_i = -Σ_r p_r·log(p_r) is then averaged over
+        all rules.
+
+        Returns
+        -------
+        float
+            Mean entropy across rules (natural log / nats), in [0, log(4)],
+            but structurally bounded above by log(2) ≈ 0.693 for this model
+            class because categories 2/3 are unreachable.
+        per_rule : bool
+            If True, also return the per-rule entropy tensor of shape
+            (rules_count,) alongside the scalar mean, as (mean, per_rule_H).
+        """
+        with torch.no_grad():
+            from utils.linguistic_richness import categories_from_one_branch, richness_from_categories
+
+            alpha = torch.sigmoid(self.literal)  # (in_features, rules) — equal vs not-equal
+            category = categories_from_one_branch(alpha)  # values in {0, 1} only
+
+            return richness_from_categories(
+                category, self.rules_count, self.in_features, per_rule=per_rule
+            )
+
     def get_interpretable_params(self):
         with torch.no_grad():
             literal = torch.sigmoid(self.literal)
 
+            linguistic_richness_mean, linguistic_richness_per_rule = self.linguistic_richness(per_rule=True)
+
             stats = {
+                # Linguistic richness - entropy (nats) computed on the
+                # SHARED 4-category support (equal / not-equal / greater /
+                # less) used by every model class, so this number is
+                # directly comparable across models. LitAnfis has no
+                # relational branch, so it structurally never reaches
+                # categories 2/3 and is capped at log(2) ≈ 0.693 out of
+                # the shared log(4) ≈ 1.386 ceiling — that gap IS the
+                # richness deficit, not a scale artifact.
+                "linguistic_richness": linguistic_richness_mean,
+                "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
                 "literal_mean": literal.mean().item(),
                 "literal_std": literal.std().item(),
                 "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
