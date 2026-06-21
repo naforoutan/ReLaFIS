@@ -176,11 +176,41 @@ class LitAnfis(nn.Module):
                 category, self.rules_count, self.in_features, per_rule=per_rule
             )
 
+    def relaxation_rate(self, per_rule: bool = False):
+        """
+        Relaxation rate — ABSOLUTE scale, structural zero for LitAnfis.
+
+        LitAnfis's only antecedent gate is `literal` (alpha = sigmoid
+        (literal)), which is a RELATIONAL equal/not-equal gate — it
+        picks which of two relations a term expresses, exactly like
+        the relational branch of GIFTSHIFTER. It has no separate
+        "don't care" / relaxation gate (no ζ-style term that blends
+        membership toward a uniform value the way UNFIS's `s` or
+        GRIFFIN's `s` do). So every rule's relaxation rate is
+        structurally exactly 0.0 for this architecture, reported here
+        (not NaN) so it's directly comparable on the same absolute
+        scale against UNFIS / GRIFFIN / GIFTSHIFTER.
+
+        Returns
+        -------
+        float
+            Always 0.0.
+        per_rule : bool
+            If True, also return a per-rule zero tensor of shape
+            (rules_count,), as (0.0, per_rule_rate).
+        """
+        with torch.no_grad():
+            per_rule_rate = torch.zeros(self.rules_count, dtype=torch.float64, device=self.mean.device)
+        if per_rule:
+            return 0.0, per_rule_rate
+        return 0.0
+
     def get_interpretable_params(self):
         with torch.no_grad():
             literal = torch.sigmoid(self.literal)
 
             linguistic_richness_mean, linguistic_richness_per_rule = self.linguistic_richness(per_rule=True)
+            relaxation_rate_mean, relaxation_rate_per_rule = self.relaxation_rate(per_rule=True)
 
             stats = {
                 # Linguistic richness - entropy (nats) computed on the
@@ -193,6 +223,12 @@ class LitAnfis(nn.Module):
                 # richness deficit, not a scale artifact.
                 "linguistic_richness": linguistic_richness_mean,
                 "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
+                # Always 0.0 for LitAnfis — see relaxation_rate() docstring.
+                # Reported here for direct comparison against
+                # UNFIS/GRIFFIN/GIFTSHIFTER on the same absolute scale.
+                "relaxation_rate": relaxation_rate_mean,
+                "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
+                "relaxation_rate_per_rule_std": relaxation_rate_per_rule.std().item(),
                 "literal_mean": literal.mean().item(),
                 "literal_std": literal.std().item(),
                 "literal_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),

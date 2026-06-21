@@ -52,9 +52,17 @@ class Evaluator:
         self.results = {}
         for model_name in model_configs.keys():
             self.results[model_name] = {
-                nl: {'train_acc': [], 'test_acc': [], 'train_auc': [], 'test_auc': [], 'linguistic_richness': []}
+                nl: {'train_acc': [], 'test_acc': [], 'train_auc': [], 'test_auc': [],
+                     'linguistic_richness': [], 'relaxation_rate': []}
                 for nl in self.noise_levels
             }
+
+        # Most recently trained wrapper for each model_name (overwritten
+        # every run). Used only to show the rule-by-rule relaxation_rate
+        # breakdown in print_detailed_report() — the run-to-run *scalar*
+        # average already lives in self.results / summary_df like every
+        # other metric.
+        self._last_wrapper = {}
         
         # Get data
         self.X_train, self.y_train = self.experiment.train_numpy()
@@ -150,10 +158,10 @@ class Evaluator:
                            wrapper_class: Type,
                            noise_std: float, 
                            run_id: int,
-                           run_seed: int = 42) -> Tuple[float, float, float, float, float, Any]:
+                           run_seed: int = 42) -> Tuple[float, float, float, float, float, float, Any]:
         """
         Train and evaluate a single model with given noise level
-        Returns: (train_acc, test_acc, train_auc, test_auc, linguistic_richness, trained_wrapper)
+        Returns: (train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, trained_wrapper)
 
         linguistic_richness is the mean per-rule entropy (in nats), computed
         on the SAME shared 4-category support (equal / not-equal /
@@ -170,6 +178,20 @@ class Evaluator:
         at all, or when training diverged to NaN/Inf (see the guard below),
         since 0.0 there would misleadingly read as "rich but degenerate"
         rather than "not applicable" / "failed run".
+
+        relaxation_rate is the mean per-rule "don't care" relaxation rate,
+        in [0, 1], for every model class that exposes
+        `model.relaxation_rate()` (UNFIS, GRIFFIN, LitAnfis, GIFTSHIFTER).
+        It measures how much a rule leans on a relaxation/"don't care"
+        gate rather than committing to its raw membership:
+          - A classical model with no such gate (e.g. plain ANFIS) has
+            no relaxation_rate at all -> np.nan (not applicable).
+          - LitAnfis has only a relational equal/not-equal gate, no
+            relaxation gate -> structurally 0.0.
+          - UNFIS / GRIFFIN / GIFTSHIFTER each expose a real relaxation
+            gate -> can be non-zero, learned from data.
+        Like linguistic_richness, np.nan is reserved for "not applicable"
+        or "failed run", never used to mean "exactly zero relaxation".
         """
         # Add noise to data
         X_train_noisy = self._apply_noise(self.X_train, noise_std, self.noise_type)
@@ -295,7 +317,7 @@ class Evaluator:
         if any(torch.isnan(p).any() or torch.isinf(p).any() for p in model.parameters()):
             print(f"Warning: model diverged to NaN/Inf (run {run_id}, noise_std={noise_std}) — recording as failed run")
             wrapper = wrapper_class(model, device=self.device)
-            return 0.0, 0.0, 0.0, 0.0, np.nan, wrapper
+            return 0.0, 0.0, 0.0, 0.0, np.nan, np.nan, wrapper
         
         # Create wrapper with trained model
         wrapper = wrapper_class(model, device=self.device)
@@ -314,6 +336,22 @@ class Evaluator:
                 linguistic_richness = np.nan
         else:
             linguistic_richness = np.nan
+
+        # Relaxation rate (mean across rules, in [0, 1]) — see docstring
+        # above. relaxation_rate_per_rule (or None if not applicable) is
+        # stashed on the wrapper so evaluate() can keep a rule-by-rule
+        # breakdown of the most recent run for print_detailed_report(),
+        # alongside the run-averaged scalar in self.results / summary_df.
+        if hasattr(model, 'relaxation_rate'):
+            try:
+                relaxation_rate, relaxation_rate_per_rule = model.relaxation_rate(per_rule=True)
+                relaxation_rate_per_rule = relaxation_rate_per_rule.detach().cpu().numpy()
+            except Exception as e:
+                print(f"Warning: Could not compute relaxation_rate - {e}")
+                relaxation_rate, relaxation_rate_per_rule = np.nan, None
+        else:
+            relaxation_rate, relaxation_rate_per_rule = np.nan, None
+        wrapper.relaxation_rate_per_rule = relaxation_rate_per_rule
         
         # Evaluation
         try:
@@ -371,7 +409,7 @@ class Evaluator:
             print(f"Error during evaluation: {e}")
             train_acc, test_acc, train_auc, test_auc = 0.0, 0.0, 0.0, 0.0
             
-        return train_acc, test_acc, train_auc, test_auc, linguistic_richness, wrapper
+        return train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, wrapper
     
     def evaluate(self, verbose: bool = True) -> pd.DataFrame:
         """
@@ -434,7 +472,7 @@ class Evaluator:
                     if torch.cuda.is_available():
                         torch.cuda.manual_seed_all(run_seed)
                     
-                    train_acc, test_acc, train_auc, test_auc, linguistic_richness, wrapper = self._train_and_evaluate(
+                    train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, wrapper = self._train_and_evaluate(
                         config['model_class'],
                         model_params,
                         config['wrapper_class'],
@@ -442,16 +480,23 @@ class Evaluator:
                         run,
                         run_seed
                     )
-                    
+
+                    # Cache the most recently trained wrapper for this model
+                    # so print_detailed_report() can show a rule-by-rule
+                    # relaxation_rate breakdown (cheap reference, not a copy).
+                    self._last_wrapper[model_name] = wrapper
+
                     if verbose:
                         lr_str = f", LingRich={linguistic_richness:.4f}" if not np.isnan(linguistic_richness) else ""
-                        print(f"Acc={test_acc:.4f}{lr_str}")
+                        rr_str = f", RelaxRate={relaxation_rate:.4f}" if not np.isnan(relaxation_rate) else ""
+                        print(f"Acc={test_acc:.4f}{lr_str}{rr_str}")
                     
                     self.results[model_name][noise_std]['train_acc'].append(train_acc)
                     self.results[model_name][noise_std]['test_acc'].append(test_acc)
                     self.results[model_name][noise_std]['train_auc'].append(train_auc)
                     self.results[model_name][noise_std]['test_auc'].append(test_auc)
                     self.results[model_name][noise_std]['linguistic_richness'].append(linguistic_richness)
+                    self.results[model_name][noise_std]['relaxation_rate'].append(relaxation_rate)
                     
                     results_summary.append({
                         'model': model_name,
@@ -461,7 +506,8 @@ class Evaluator:
                         'test_acc': test_acc,
                         'train_auc': train_auc,
                         'test_auc': test_auc,
-                        'linguistic_richness': linguistic_richness
+                        'linguistic_richness': linguistic_richness,
+                        'relaxation_rate': relaxation_rate
                     })
         
         return pd.DataFrame(results_summary)
@@ -485,6 +531,17 @@ class Evaluator:
                         lr_std = np.nanstd(lr_values)
                     else:
                         lr_mean, lr_std = np.nan, np.nan
+
+                    # Same nan-safe aggregation for relaxation_rate (NaN
+                    # means "not applicable for this model class", not
+                    # "exactly zero relaxation" — see _train_and_evaluate
+                    # docstring).
+                    rr_values = stats['relaxation_rate']
+                    if len(rr_values) > 0 and not all(np.isnan(v) for v in rr_values):
+                        rr_mean = np.nanmean(rr_values)
+                        rr_std = np.nanstd(rr_values)
+                    else:
+                        rr_mean, rr_std = np.nan, np.nan
                     
                     summary.append({
                         'model': model_name,
@@ -498,7 +555,9 @@ class Evaluator:
                         'test_auc_mean': np.mean(stats['test_auc']),
                         'test_auc_std': np.std(stats['test_auc']),
                         'linguistic_richness_mean': lr_mean,
-                        'linguistic_richness_std': lr_std
+                        'linguistic_richness_std': lr_std,
+                        'relaxation_rate_mean': rr_mean,
+                        'relaxation_rate_std': rr_std
                     })
         
         return pd.DataFrame(summary)
@@ -762,9 +821,9 @@ class Evaluator:
         summary_df = self.get_summary_statistics()
         if len(summary_df) > 0:
             print("\n📊 PERFORMANCE SUMMARY:")
-            print("-"*98)
-            print(f"{'Model':<15} {'Noise σ':<10} {'Test Acc ± Std':<20} {'Test AUC ± Std':<20} {'Ling. Richness ± Std':<22}")
-            print("-"*98)
+            print("-"*121)
+            print(f"{'Model':<15} {'Noise σ':<10} {'Test Acc ± Std':<20} {'Test AUC ± Std':<20} {'Ling. Richness ± Std':<22} {'Relax. Rate ± Std':<20}")
+            print("-"*121)
             
             for model_name in self.model_configs.keys():
                 model_data = summary_df[summary_df['model'] == model_name]
@@ -774,10 +833,14 @@ class Evaluator:
                         lr_label = "N/A"
                     else:
                         lr_label = f"{row['linguistic_richness_mean']:.4f} ± {row['linguistic_richness_std']:.4f}"
+                    if np.isnan(row['relaxation_rate_mean']):
+                        rr_label = "N/A"
+                    else:
+                        rr_label = f"{row['relaxation_rate_mean']:.4f} ± {row['relaxation_rate_std']:.4f}"
                     print(f"{model_name.upper():<15} {noise_label:<10} "
                           f"{row['test_acc_mean']:.4f} ± {row['test_acc_std']:.4f}    "
                           f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}    "
-                          f"{lr_label:<22}")
+                          f"{lr_label:<22} {rr_label:<20}")
         else:
             print("\n⚠️ No results available. Run evaluate() first.")
             return
@@ -827,7 +890,44 @@ class Evaluator:
                 print(f"  • {row['model'].upper():<15} "
                       f"H = {row['linguistic_richness_mean']:.4f} ± {row['linguistic_richness_std']:.4f} nats  "
                       f"({pct_mean:5.1f}% ± {pct_std:4.1f}% of shared ceiling)")
-        
+
+        # Relaxation rate: descriptive only (not folded into best-model
+        # selection), shown on the clean-data (noise_std == 0) split for
+        # the subset of models that expose model.relaxation_rate().
+        #
+        # Unlike linguistic_richness (which measures *which* relation a
+        # rule expresses), relaxation_rate measures how much a rule
+        # leans on a "don't care" gate instead of committing to its raw
+        # membership at all. It is in [0, 1], comparable across model
+        # classes with no renormalization:
+        #   - A classical rule with no such gate is 0.0 by construction
+        #     (ANFIS has no relaxation_rate at all -> NaN/not applicable;
+        #     LitAnfis has only a relational gate, no relaxation gate at
+        #     all -> structurally 0.0).
+        #   - UNFIS / GRIFFIN / GIFTSHIFTER each expose a real, learned
+        #     relaxation gate and can land anywhere in (0, 1].
+        #
+        # Reported two ways, as requested: the rules-average scalar
+        # (from the run-averaged summary_df, same aggregation as every
+        # other metric) AND a rule-by-rule breakdown taken from the most
+        # recently trained model for each model_name.
+        clean_rr = summary_df[summary_df['noise_std'] == 0] if self.use_noise else summary_df
+        clean_rr = clean_rr.dropna(subset=['relaxation_rate_mean'])
+        if len(clean_rr) > 0:
+            print("\n🌊 RELAXATION RATE (clean data, higher = rules rely more on a \"don't care\" gate):")
+            print("    Scale [0, 1], comparable across models; 0 = no relaxation, no per-model renormalization.")
+            print("-"*80)
+            for _, row in clean_rr.sort_values('relaxation_rate_mean', ascending=False).iterrows():
+                print(f"  • {row['model'].upper():<15} "
+                      f"rate = {row['relaxation_rate_mean']:.4f} ± {row['relaxation_rate_std']:.4f}  "
+                      f"(rules-average)")
+
+                wrapper = self._last_wrapper.get(row['model'])
+                per_rule = getattr(wrapper, 'relaxation_rate_per_rule', None) if wrapper is not None else None
+                if per_rule is not None:
+                    per_rule_str = ", ".join(f"r{idx}={val:.4f}" for idx, val in enumerate(per_rule))
+                    print(f"      per-rule (most recent run): {per_rule_str}")
+
         best_model, details = self.get_best_model()
         print("\n🏆 VERDICT:")
         print("-"*80)

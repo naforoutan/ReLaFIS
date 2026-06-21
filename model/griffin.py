@@ -160,6 +160,60 @@ class GRIFFIN(nn.Module):
                 category, self.rules_count, self.rank, per_rule=per_rule
             )
 
+    def relaxation_rate(self, per_rule: bool = False):
+        """
+        Relaxation rate — how much each rule leans on GRIFFIN's
+        `relaxer` gate, which blends membership toward a uniform
+        "don't care" value:
+
+            relaxer = sigmoid(s * zeta)
+            y = relaxer + (1 - relaxer) * y
+
+        As relaxer -> 1 a component is fully relaxed (y -> 1
+        regardless of x); as relaxer -> 0 it's fully committed to the
+        raw membership (after the equal/not-equal `literal` gate).
+        This is the same kind of "don't care" mechanism as UNFIS's
+        zeta, distinct from the relational equal/not-equal gate
+        (`literal` here, `literal` in LitAnfis) which has no notion of
+        relaxation at all.
+
+        `s` (and hence `relaxer`) lives in (1, rules, rank) — the
+        rotated/projected component space, same convention used in
+        linguistic_richness() — so here "n terms per rule" is `rank`,
+        not `in_features`. For rule r:
+
+            rate_r = (1/rank) * sum_k relaxer_{r,k}
+
+        and the overall scalar is the mean of rate_r over all rules.
+
+        Returns
+        -------
+        float
+            Mean relaxation rate across rules, in [0, 1].
+        per_rule : bool
+            If True, also return the per-rule rate tensor of shape
+            (rules_count,), as (mean, per_rule_rate).
+        """
+        with torch.no_grad():
+            relaxer = torch.sigmoid(self.s * self.zeta).squeeze(0)  # (rules, rank)
+            per_rule_rate = relaxer.mean(dim=1)  # sum_k relaxer / rank, shape (rules,)
+            mean_rate = per_rule_rate.mean().item()
+
+        if per_rule:
+            return mean_rate, per_rule_rate
+        return mean_rate
+
+    def get_interpretable_params(self):
+        with torch.no_grad():
+            relaxation_rate_mean, relaxation_rate_per_rule = self.relaxation_rate(per_rule=True)
+
+            stats = {
+                "relaxation_rate": relaxation_rate_mean,
+                "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
+                "relaxation_rate_per_rule_std": relaxation_rate_per_rule.std().item(),
+            }
+        return stats
+
     def tsk(self, Z, y):
         # Z shape -> b, r, rank
         zeta = self.sigmoid(self.s / 4)  # 1, r, rank
