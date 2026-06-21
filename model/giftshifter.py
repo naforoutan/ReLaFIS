@@ -9,6 +9,12 @@ import pandas as pd
 
 class GIFTSHIFTER(nn.Module):
 
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute scale used across every model in this codebase (equal /
+    # not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). GIFTSHIFTER actually reaches all 4.
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
@@ -233,7 +239,75 @@ class GIFTSHIFTER(nn.Module):
         result = (rule_outputs * y64_r).sum(dim=1)
 
         return result.to(X.dtype)
-    
+
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric — ABSOLUTE scale.
+
+        Motivation
+        ──────────
+        Each (feature, rule) pair in GIFTSHIFTER's antecedent is built from
+        two competing branches:
+
+            Gaussian branch   (β-weighted):  "equal to"      vs  "not equal to"
+            Relational branch (1-β weighted): "greater than"  vs  "less than"
+
+        i.e. every linguistic term has **4 possible relational categories**:
+            0: equal           (β dominates,      α₁ = sigmoid(literal) ≥ 0.5)
+            1: not-equal       (β dominates,      α₁ = sigmoid(literal) <  0.5)
+            2: greater-than    (1-β dominates,    α₂ = sigmoid(temp)    ≥ 0.5)
+            3: less-than       (1-β dominates,    α₂ = sigmoid(temp)    <  0.5)
+
+        This is the SAME shared 4-category support used by every model in
+        this codebase (see `linguistic_richness_utils.py`), so the result
+        is directly comparable against e.g. LitAnfis without any
+        per-model renormalization — GIFTSHIFTER can actually reach all 4
+        categories, while LitAnfis structurally can't, and that shows up
+        directly in the raw nats value.
+
+        For each rule i we hard-assign every one of the n=in_features terms
+        to whichever of these 4 categories it is dominantly expressing
+        (β ≥ 0.5 picks the Gaussian branch, then α₁ picks equal/not-equal;
+        β < 0.5 picks the relational branch, then α₂ picks greater/less).
+        Counting how many features fall into each category gives n_r
+        (r = 0..3) per rule, hence an empirical distribution p_r = n_r / n.
+
+        The Shannon entropy of that distribution,
+            H_i = - Σ_r p_r · log(p_r)
+        measures how evenly a rule's features are spread across the 4
+        relational "vocabularies" rather than being dominated by a single
+        one. Averaging H_i over all rules gives a single scalar:
+        the model's linguistic richness.
+
+        A model whose antecedents only ever express one kind of relation
+        (e.g. classical "is approximately equal to X" fuzzy rules) collapses
+        every feature into a single category in every rule, so H_i = 0 for
+        all i and the overall score is exactly 0. A model that mixes
+        several relation types within its rules scores above 0, with the
+        maximum log(4) reached when all 4 categories are used equally
+        often within a rule.
+
+        Returns
+        -------
+        float
+            Mean entropy across rules (bits→nats, natural log), averaged
+            over the model's `rules_count`. Always in [0, log(4)].
+        per_rule : bool
+            If True, also return the per-rule entropy tensor of shape
+            (rules_count,) alongside the scalar mean, as (mean, per_rule_H).
+        """
+        with torch.no_grad():
+            from utils.linguistic_richness import categories_from_two_branch, richness_from_categories
+
+            alpha1 = torch.sigmoid(self.literal)      # (in_features, rules) — equal vs not-equal
+            alpha2 = torch.sigmoid(self.temp)          # (in_features, rules) — greater vs less
+            beta   = torch.sigmoid(self.comb_weight)   # (in_features, rules) — Gaussian vs relational
+
+            category = categories_from_two_branch(alpha1, alpha2, beta)  # values in {0,1,2,3}
+
+            return richness_from_categories(
+                category, self.rules_count, self.in_features, per_rule=per_rule
+            )
 
     def get_interpretable_params(self):
         with torch.no_grad():
@@ -247,7 +321,16 @@ class GIFTSHIFTER(nn.Module):
             H2 = -(temp    * torch.log(temp    + eps)) / one_over_e 
             r  = beta * H1 + (1.0 - beta) * H2 
 
+            linguistic_richness_mean, linguistic_richness_per_rule = self.linguistic_richness(per_rule=True)
+
             stats = {
+                # Linguistic richness - entropy (nats) of the 4 dominant
+                # relational categories (equal / not-equal / greater / less)
+                # per rule, averaged across rules. 0 for models that only
+                # ever express one relation type; up to log(4) ≈ 1.386 for
+                # rules that mix all 4 relation types evenly.
+                "linguistic_richness": linguistic_richness_mean,
+                "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
                 # α₁ - Gaussian branch participation
                 "alpha1_mean": literal.mean().item(),
                 "alpha1_std":  literal.std().item(),

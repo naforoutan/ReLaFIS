@@ -8,6 +8,19 @@ from sklearn.metrics import accuracy_score
 import pandas as pd
  
 class GRIFFIN(nn.Module):
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute scale used across every model in this codebase (equal /
+    # not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). GRIFFIN's `s` parameter plays the
+    # same role as LitAnfis's `literal` (an equal/not-equal gate via
+    # sigmoid(eta*s)) — there is no greater/less relational branch, so
+    # GRIFFIN structurally only ever populates 2 of these 4 categories,
+    # same as LitAnfis. Its `relaxer` term (sigmoid(s*zeta)) blends
+    # toward a uniform "don't care" value but does not introduce a third
+    # category — it softens membership, it doesn't change which relation
+    # is being expressed.
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool = False, rank: int = 2,
                  regression: bool = False, zeta: float = 1.0, Xi: float = 1.0, eta: float = 1.0,
                  drop_out_p: float = 0.0, device=None, dtype=None):
@@ -96,6 +109,56 @@ class GRIFFIN(nn.Module):
         output = self.tsk(Z, y_norm)
 
         return output, reconstructed, entropy
+
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric (GRIFFIN variant) — ABSOLUTE scale.
+
+        GRIFFIN's antecedent gate `s` (shape (1, rules, rank)) plays the
+        same role as LitAnfis's `literal`: an equal/not-equal gate via
+
+            literal = sigmoid(eta * s)
+            y = (y * literal) + (1 - y) * (1 - literal)
+
+        There is no separate greater-than/less-than relational branch
+        (the `relaxer = sigmoid(s * zeta)` term that follows only blends
+        membership toward a uniform "don't care" value — it doesn't
+        change WHICH relation a term expresses, just how strongly). So,
+        like LitAnfis, GRIFFIN structurally only ever populates 2 of the
+        4 categories on the SHARED scale used across this codebase (see
+        `linguistic_richness_utils.py`):
+
+            0: equal      (literal ≥ 0.5)
+            1: not-equal  (literal <  0.5)
+
+        Unlike LitAnfis (which gates over `in_features` raw features),
+        GRIFFIN's gate operates over the `rank` rotated/projected
+        components per rule (after the V rotation), since that's the
+        space `s` actually lives in. So here the "n linguistic terms per
+        rule" is `rank`, not `in_features`.
+
+        Returns
+        -------
+        float
+            Mean entropy across rules (nats), in [0, log(4)], but
+            structurally bounded above by log(2) ≈ 0.693 for this model
+            class because categories 2/3 are unreachable.
+        per_rule : bool
+            If True, also return the per-rule entropy tensor of shape
+            (rules_count,) alongside the scalar mean, as (mean, per_rule_H).
+        """
+        with torch.no_grad():
+            from utils.linguistic_richness import categories_from_one_branch, richness_from_categories
+
+            # self.s: (1, rules, rank) -> squeeze to (rules, rank), then
+            # transpose to (rank, rules) to match the (n_terms, rules_count)
+            # convention used by richness_from_categories / bincount-per-column.
+            literal = torch.sigmoid(self.eta * self.s).squeeze(0).T  # (rank, rules)
+            category = categories_from_one_branch(literal)  # values in {0, 1}
+
+            return richness_from_categories(
+                category, self.rules_count, self.rank, per_rule=per_rule
+            )
 
     def tsk(self, Z, y):
         # Z shape -> b, r, rank

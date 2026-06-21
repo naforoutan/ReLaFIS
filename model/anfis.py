@@ -9,6 +9,15 @@ import pandas as pd
 
 
 class ANFIS(nn.Module):
+    # Number of distinct linguistic-relation categories on the SHARED,
+    # absolute scale used across every model in this codebase (equal /
+    # not-equal / greater-than / less-than — see
+    # linguistic_richness_utils.py). Kept at 4 for comparability even
+    # though ANFIS structurally never leaves category 0 (see
+    # linguistic_richness() below) — classical ANFIS has no relational
+    # gate of any kind, just a plain Gaussian membership function.
+    N_LINGUISTIC_CATEGORIES = 4
+
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool = False,
                  drop_out_p: float = 0.5, device=None, dtype=None):
         super().__init__()
@@ -64,7 +73,21 @@ class ANFIS(nn.Module):
 
         max_log_y= torch.max(y, dim=1, keepdim=True)[0]
 
-        y = torch.sum(y - max_log_y, dim=1)  # Subtract max for numerical stability
+        # FIX (same issue as GIFTSHIFTER / LitAnfis / GIFTSHIFT): firing
+        # strength was the PRODUCT of per-feature memberships (sum in
+        # log-space) over dim=1 = in_features. For high-dimensional data
+        # (e.g. 617 features on Isolet), multiplying hundreds of numbers in
+        # (0, 1] makes every rule's firing strength numerically degenerate
+        # (vanishingly small and nearly identical across rules/inputs, even
+        # though the log-sum-exp trick prevents literal underflow to 0.0).
+        # This makes the firing strengths uninformative regardless of X, so
+        # the model collapses to predicting a near-constant output.
+        #
+        # Using the geometric MEAN instead of the product (mean instead of
+        # sum in log-space) keeps the same fuzzy-AND semantics but no
+        # longer shrinks with in_features, so it stays discriminative
+        # regardless of input dimensionality.
+        y = torch.mean(y - max_log_y, dim=1)
 
         y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
         
@@ -72,7 +95,40 @@ class ANFIS(nn.Module):
     
     def mamdani(self, y):
         return self.mamdani_linear(y)
-    
+
+    def linguistic_richness(self, per_rule: bool = False):
+        """
+        Linguistic-richness metric — ABSOLUTE scale, structural zero.
+
+        Classical ANFIS has only a plain Gaussian membership function
+        (`mean`, `std`) — no equal/not-equal gate (`literal`), no
+        greater/less gate (`temp`), no mixing coefficient (`comb_weight`).
+        Every linguistic term therefore always expresses the SAME single
+        category ("equal to mu") on the shared 4-category support used
+        across this codebase (see `linguistic_richness_utils.py`).
+
+        Since every (feature, rule) entry falls into exactly one category
+        with probability 1, the empirical distribution per rule is a
+        one-hot vector and its Shannon entropy is exactly 0 — not because
+        of a degenerate or undertrained model, but because the
+        architecture has no relational vocabulary to vary across. This is
+        reported as a real 0.0 (not NaN) so it can be plotted directly
+        alongside richer models on the same absolute scale.
+
+        Returns
+        -------
+        float
+            Always 0.0.
+        per_rule : bool
+            If True, also return a per-rule zero tensor of shape
+            (rules_count,), as (0.0, per_rule_H).
+        """
+        with torch.no_grad():
+            entropies = torch.zeros(self.rules_count, dtype=torch.float64, device=self.mean.device)
+        if per_rule:
+            return 0.0, entropies
+        return 0.0
+
     def forward(self, X):
         y = self.encode(X)
 
