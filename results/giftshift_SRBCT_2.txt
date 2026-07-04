@@ -1,0 +1,38 @@
+Experiment Result SRBCT
+------ train ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000        20
+           1     1.0000    1.0000    1.0000         8
+           2     1.0000    1.0000    1.0000        13
+           3     1.0000    1.0000    1.0000        17
+
+    accuracy                         1.0000        58
+   macro avg     1.0000    1.0000    1.0000        58
+weighted avg     1.0000    1.0000    1.0000        58
+AUC	1.0
+------ test ------
+              precision    recall  f1-score   support
+
+           0     1.0000    1.0000    1.0000         9
+           1     1.0000    1.0000    1.0000         3
+           2     1.0000    1.0000    1.0000         5
+           3     1.0000    1.0000    1.0000         8
+
+    accuracy                         1.0000        25
+   macro avg     1.0000    1.0000    1.0000        25
+weighted avg     1.0000    1.0000    1.0000        25
+AUC	1.0
+{'binary': False,
+ 'drop_out_p': 0.3,
+ 'in_features': 2308,
+ 'out_features': 4,
+ 'rules': 2}
+{'alpha': 1.0,
+ 'batch_size': 32,
+ 'epochs': 100,
+ 'lr': 0.005,
+ 'max_lr': 0.01,
+ 'min_alpha': 0.0,
+ 'random_state': 199,
+ 'train_size': 58}

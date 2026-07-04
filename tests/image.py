@@ -6,23 +6,23 @@ class sees them exactly like any other tabular dataset.  The heavy
 framework-specific imports (tensorflow, PIL) are deferred into __init__ so
 they don't break the module import when those libraries are absent.
 
-To add a new image dataset:
-  - Flatten images to 1-D feature vectors.
-  - Store labels as a string or integer Series in self.target.
-  - Pass test_data and index=False to super().__init__() for pre-split sets.
+Pre-defined train/test files are merged into one pool, then split 70/30
+via tests.base.Test.
 """
 
 import pandas as pd
 from .base import Test
 
+
 class MNIST(Test):
     """MNIST handwritten digits loaded from local CSV files."""
 
     def __init__(self, *args, **kwargs) -> None:
-        self.df = pd.read_csv("data/mnist/mnist_train.csv")
-        test_data = pd.read_csv("data/mnist/mnist_test.csv")
+        train_df = pd.read_csv("data/mnist/mnist_train.csv")
+        test_df = pd.read_csv("data/mnist/mnist_test.csv")
+        self.df = pd.concat([train_df, test_df], ignore_index=True)
         self.target = "label"
-        super().__init__(*args, **kwargs, test_data=test_data, index=False)
+        super().__init__(*args, **kwargs, index=False)
 
 
 class FashionMNIST(Test):
@@ -39,7 +39,6 @@ class FashionMNIST(Test):
         test_df = pd.DataFrame(x_test.reshape(x_test.shape[0], -1))
         test_df["label"] = y_test
 
-        self.df = train_df
+        self.df = pd.concat([train_df, test_df], ignore_index=True)
         self.target = "label"
-        super().__init__(task_type="classification", *args, **kwargs, test_data=test_df, index=False)
-
+        super().__init__(task_type="classification", *args, **kwargs, index=False)

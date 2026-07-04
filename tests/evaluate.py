@@ -17,7 +17,11 @@ warnings.filterwarnings('ignore')
 
 class Evaluator:
     """
-    Flexible robustness evaluator that can compare any two models with optional noise
+    Flexible robustness evaluator that can compare any number of models with optional noise.
+
+    Each of the ``n_runs`` repeats training from scratch on a *fresh* 70/30
+    train/test split (via ``experiment.resplit(session_id=run_seed)``), so reported
+    mean ± std reflects both split and initialization variance.
     """
     
     def __init__(self, 
@@ -63,17 +67,36 @@ class Evaluator:
         # average already lives in self.results / summary_df like every
         # other metric.
         self._last_wrapper = {}
-        
-        # Get data
+
+        X_sample, _ = self.experiment.train_numpy()
+        self.n_features = X_sample.shape[1]
+
+        df, target = self.experiment.get_data()
+        if isinstance(target, str):
+            y_full = df[target]
+        elif isinstance(target, int):
+            y_full = df.iloc[:, target]
+        else:
+            y_full = target
+        self.n_classes = len(np.unique(np.ravel(y_full)))
+
+        # Populated afresh at the start of every run via _refresh_split().
+        self.X_train = self.X_test = None
+        self.y_train = self.y_test = None
+
+    @staticmethod
+    def _labels_1d(y: np.ndarray) -> np.ndarray:
+        if y.ndim == 2:
+            return np.argmax(y, axis=1)
+        return np.ravel(y)
+
+    def _refresh_split(self, session_id: int) -> None:
+        self.experiment.resplit(session_id=session_id)
         self.X_train, self.y_train = self.experiment.train_numpy()
         self.X_test, self.y_test = self.experiment.test_numpy()
-        
-        # Convert labels to 1D if needed
-        if self.y_train.ndim == 2:
-            self.y_train = np.argmax(self.y_train, axis=1)
-        if self.y_test.ndim == 2:
-            self.y_test = np.argmax(self.y_test, axis=1)
-    
+        self.y_train = self._labels_1d(self.y_train)
+        self.y_test = self._labels_1d(self.y_test)
+
     def _apply_noise(self, 
                      X: np.ndarray, 
                      noise_std: float, 
@@ -193,6 +216,13 @@ class Evaluator:
         Like linguistic_richness, np.nan is reserved for "not applicable"
         or "failed run", never used to mean "exactly zero relaxation".
         """
+        self._refresh_split(session_id=run_seed)
+
+        # Feature count can change across resplits when PyCaret fits encoders on
+        # train only (e.g. rare categorical levels in Autism's country column).
+        run_params = model_params.copy()
+        run_params['in_features'] = self.X_train.shape[1]
+
         # Add noise to data
         X_train_noisy = self._apply_noise(self.X_train, noise_std, self.noise_type)
         X_test_noisy = self._apply_noise(self.X_test, noise_std, self.noise_type)
@@ -220,7 +250,7 @@ class Evaluator:
                                   worker_init_fn=seed_worker, generator=g)
         
         # Initialize model
-        model = model_class(**model_params, dtype=torch.float32)
+        model = model_class(**run_params, dtype=torch.float32)
         model = model.to(self.device)
         
         # Check if model has entropy_coef attribute (for GIFTSHIFTENTROPY)
@@ -317,7 +347,7 @@ class Evaluator:
         if any(torch.isnan(p).any() or torch.isinf(p).any() for p in model.parameters()):
             print(f"Warning: model diverged to NaN/Inf (run {run_id}, noise_std={noise_std}) — recording as failed run")
             wrapper = wrapper_class(model, device=self.device)
-            return 0.0, 0.0, 0.0, 0.0, np.nan, np.nan, wrapper
+            return np.nan, np.nan, np.nan, np.nan, np.nan, np.nan, wrapper
         
         # Create wrapper with trained model
         wrapper = wrapper_class(model, device=self.device)
@@ -403,11 +433,11 @@ class Evaluator:
                     
             except Exception as e:
                 print(f"Warning: Could not compute AUC - {e}")
-                train_auc, test_auc = 0.0, 0.0
+                train_auc, test_auc = np.nan, np.nan
                 
         except Exception as e:
             print(f"Error during evaluation: {e}")
-            train_acc, test_acc, train_auc, test_auc = 0.0, 0.0, 0.0, 0.0
+            train_acc, test_acc, train_auc, test_auc = np.nan, np.nan, np.nan, np.nan
             
         return train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, wrapper
     
@@ -447,12 +477,12 @@ class Evaluator:
                 # Only set defaults for in_features / out_features / binary
                 # if the caller did NOT already supply them (e.g. via PCA wrapper)
                 if 'in_features' not in model_params:
-                    model_params['in_features'] = self.X_train.shape[1]
+                    model_params['in_features'] = self.n_features
                 if 'out_features' not in model_params:
                     if self.binary:
                         model_params['out_features'] = 1
                     else:
-                        model_params['out_features'] = len(np.unique(self.y_train))
+                        model_params['out_features'] = self.n_classes
                 if 'binary' not in model_params:
                     model_params['binary'] = self.binary
                 
@@ -546,14 +576,16 @@ class Evaluator:
                     summary.append({
                         'model': model_name,
                         'noise_std': noise_std,
-                        'train_acc_mean': np.mean(stats['train_acc']),
-                        'train_acc_std': np.std(stats['train_acc']),
-                        'test_acc_mean': np.mean(stats['test_acc']),
-                        'test_acc_std': np.std(stats['test_acc']),
-                        'train_auc_mean': np.mean(stats['train_auc']),
-                        'train_auc_std': np.std(stats['train_auc']),
-                        'test_auc_mean': np.mean(stats['test_auc']),
-                        'test_auc_std': np.std(stats['test_auc']),
+                        'train_acc_mean': np.nanmean(stats['train_acc']),
+                        'train_acc_std': np.nanstd(stats['train_acc']),
+                        'test_acc_mean': np.nanmean(stats['test_acc']),
+                        'test_acc_std': np.nanstd(stats['test_acc']),
+                        'test_acc_best': np.nanmax(stats['test_acc']),
+                        'train_auc_mean': np.nanmean(stats['train_auc']),
+                        'train_auc_std': np.nanstd(stats['train_auc']),
+                        'test_auc_mean': np.nanmean(stats['test_auc']),
+                        'test_auc_std': np.nanstd(stats['test_auc']),
+                        'test_auc_best': np.nanmax(stats['test_auc']),
                         'linguistic_richness_mean': lr_mean,
                         'linguistic_richness_std': lr_std,
                         'relaxation_rate_mean': rr_mean,
@@ -806,6 +838,41 @@ class Evaluator:
                 'decision_reason': reason,
                 'decision_type': 'performance_based',
             }
+
+    def _aggregation_note(self) -> str:
+        return f"Number of runs per configuration: {self.n_runs}"
+
+    def _summary_metric_suffix(self) -> str:
+        """Suffix for summary column headers (e.g. ' (top-30)')."""
+        return ""
+
+    def _summary_column_labels(self) -> Dict[str, str]:
+        suffix = self._summary_metric_suffix()
+        return {
+            "test_acc": "Test Acc ± Std" + suffix,
+            "test_auc": "Test AUC ± Std" + suffix,
+            "linguistic_richness": "Ling. Richness ± Std" + suffix,
+            "relaxation_rate": "Relax. Rate ± Std" + suffix,
+        }
+
+    def _show_best_in_summary_table(self) -> bool:
+        """If False, Best Acc/AUC are omitted from the main summary table."""
+        return True
+
+    def _clean_noise_level(self) -> float:
+        return 0.0 if 0.0 in self.noise_levels else self.noise_levels[0]
+
+    def _print_best_run_metrics(self, summary_df: pd.DataFrame) -> None:
+        """Print peak single-run test metrics (may differ from summary averages)."""
+        clean_best = summary_df[summary_df['noise_std'] == self._clean_noise_level()]
+        if len(clean_best) == 0:
+            return
+        print("\n🏅 BEST SINGLE-RUN TEST METRICS (max across runs, clean data):")
+        print("-"*80)
+        for _, row in clean_best.sort_values('test_acc_best', ascending=False).iterrows():
+            acc_best = "N/A" if np.isnan(row['test_acc_best']) else f"{row['test_acc_best']:.4f}"
+            auc_best = "N/A" if np.isnan(row['test_auc_best']) else f"{row['test_auc_best']:.4f}"
+            print(f"  • {row['model'].upper():<15} Best Test Acc = {acc_best}, Best Test AUC = {auc_best}")
     
     def print_detailed_report(self):
         """Print a detailed report of the evaluation"""
@@ -815,20 +882,30 @@ class Evaluator:
         print(f"Noise Enabled: {self.use_noise}")
         if self.use_noise:
             print(f"Noise Type: {self.noise_type}")
-        print(f"Number of runs per configuration: {self.n_runs}")
+        print(self._aggregation_note())
+        print("Train/test split: fresh 70/30 redrawn each run (PyCaret session_id)")
         print("="*80)
         
         summary_df = self.get_summary_statistics()
         if len(summary_df) > 0:
             print("\n📊 PERFORMANCE SUMMARY:")
-            print("-"*121)
-            print(f"{'Model':<15} {'Noise σ':<10} {'Test Acc ± Std':<20} {'Test AUC ± Std':<20} {'Ling. Richness ± Std':<22} {'Relax. Rate ± Std':<20}")
-            print("-"*121)
+            print("-"*145)
+            show_best = self._show_best_in_summary_table()
+            cols = self._summary_column_labels()
+            if show_best:
+                print(f"{'Model':<15} {'Noise σ':<10} {cols['test_acc']:<32} {'Best Acc':<10} "
+                      f"{cols['test_auc']:<32} {'Best AUC':<10} {cols['linguistic_richness']:<34} {cols['relaxation_rate']:<28}")
+            else:
+                print(f"{'Model':<15} {'Noise σ':<10} {cols['test_acc']:<32} "
+                      f"{cols['test_auc']:<32} {cols['linguistic_richness']:<34} {cols['relaxation_rate']:<28}")
+            print("-"*145)
             
             for model_name in self.model_configs.keys():
                 model_data = summary_df[summary_df['model'] == model_name]
                 for _, row in model_data.iterrows():
                     noise_label = f"{row['noise_std']:.2f}" if self.use_noise else "Clean"
+                    best_acc_label = "N/A" if np.isnan(row['test_acc_best']) else f"{row['test_acc_best']:.4f}"
+                    best_auc_label = "N/A" if np.isnan(row['test_auc_best']) else f"{row['test_auc_best']:.4f}"
                     if np.isnan(row['linguistic_richness_mean']):
                         lr_label = "N/A"
                     else:
@@ -837,10 +914,18 @@ class Evaluator:
                         rr_label = "N/A"
                     else:
                         rr_label = f"{row['relaxation_rate_mean']:.4f} ± {row['relaxation_rate_std']:.4f}"
-                    print(f"{model_name.upper():<15} {noise_label:<10} "
-                          f"{row['test_acc_mean']:.4f} ± {row['test_acc_std']:.4f}    "
-                          f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}    "
-                          f"{lr_label:<22} {rr_label:<20}")
+                    if show_best:
+                        print(f"{model_name.upper():<15} {noise_label:<10} "
+                              f"{row['test_acc_mean']:.4f} ± {row['test_acc_std']:.4f}    "
+                              f"{best_acc_label:<10} "
+                              f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}    "
+                              f"{best_auc_label:<10} "
+                              f"{lr_label:<22} {rr_label:<20}")
+                    else:
+                        print(f"{model_name.upper():<15} {noise_label:<10} "
+                              f"{row['test_acc_mean']:.4f} ± {row['test_acc_std']:.4f}    "
+                              f"{row['test_auc_mean']:.4f} ± {row['test_auc_std']:.4f}    "
+                              f"{lr_label:<26} {rr_label:<24}")
         else:
             print("\n⚠️ No results available. Run evaluate() first.")
             return
@@ -944,5 +1029,212 @@ class Evaluator:
             for name, perf in details['clean_performance'].items():
                 print(f"  • {name.upper()}: Acc={perf['accuracy']:.4f} ± {perf['accuracy_std']:.4f}, "
                       f"AUC={perf['auc']:.4f} ± {perf['auc_std']:.4f}")
+
+        self._print_best_run_metrics(summary_df)
         
         print("="*80)
+
+
+class TopKEvaluator(Evaluator):
+    """
+    Run the model ``n_runs`` times with random seeds, then report mean ± std
+    over the ``top_k`` best runs (ranked by ``ranking_metric``, default test_acc).
+
+    All other behaviour (noise sweeps, plots, best-model selection) uses the
+    top-k aggregated statistics from :meth:`get_summary_statistics`.
+    """
+
+    VALID_RANKING_METRICS = ("test_acc", "test_auc", "both")
+
+    def __init__(
+        self,
+        *args,
+        top_k: int = 30,
+        ranking_metric: str = "both",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        if top_k < 1:
+            raise ValueError(f"top_k must be >= 1, got {top_k}")
+        if ranking_metric not in self.VALID_RANKING_METRICS:
+            raise ValueError(
+                f"ranking_metric must be one of {self.VALID_RANKING_METRICS}, "
+                f"got '{ranking_metric}'"
+            )
+        self.top_k = top_k
+        self.ranking_metric = ranking_metric
+
+    def _aggregation_note(self) -> str:
+        if self.ranking_metric == "both":
+            return (
+                f"Total runs per configuration: {self.n_runs} "
+                f"(mean ± std over top {self.top_k}: "
+                f"acc ranked by test_acc, auc ranked by test_auc)"
+            )
+        return (
+            f"Total runs per configuration: {self.n_runs} "
+            f"(mean ± std over top {self.top_k} by {self.ranking_metric})"
+        )
+
+    def _summary_metric_suffix(self) -> str:
+        if self.ranking_metric == "both":
+            return f" (top-{self.top_k})"
+        return f" (top-{self.top_k})"
+
+    def _summary_column_labels(self) -> Dict[str, str]:
+        """Per-column header labels for the performance summary table."""
+        k = self.top_k
+        if self.ranking_metric == "both":
+            return {
+                "test_acc": f"Test Acc ± Std (top-{k}, by acc)",
+                "test_auc": f"Test AUC ± Std (top-{k}, by auc)",
+                "linguistic_richness": f"Ling. Richness ± Std (top-{k}, by acc)",
+                "relaxation_rate": f"Relax. Rate ± Std (top-{k}, by acc)",
+            }
+        suffix = self._summary_metric_suffix()
+        return {
+            "test_acc": "Test Acc ± Std" + suffix,
+            "test_auc": "Test AUC ± Std" + suffix,
+            "linguistic_richness": "Ling. Richness ± Std" + suffix,
+            "relaxation_rate": "Relax. Rate ± Std" + suffix,
+        }
+
+    def _show_best_in_summary_table(self) -> bool:
+        return False
+
+    def get_peak_run_metrics(self, noise_std: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
+        """
+        Peak single-run test acc and test auc per model on clean data.
+        Acc and auc peaks may come from different runs.
+        """
+        if noise_std is None:
+            noise_std = self._clean_noise_level()
+        peaks: Dict[str, Dict[str, Any]] = {}
+        for model_name in self.model_configs:
+            stats = self.results[model_name][noise_std]
+            acc_arr = np.asarray(stats["test_acc"], dtype=float)
+            auc_arr = np.asarray(stats["test_auc"], dtype=float)
+            if len(acc_arr) == 0:
+                continue
+            entry: Dict[str, Any] = {"model": model_name, "noise_std": noise_std}
+            if not all(np.isnan(acc_arr)):
+                acc_idx = int(np.nanargmax(acc_arr))
+                entry["test_acc_best"] = float(acc_arr[acc_idx])
+                entry["test_acc_best_run"] = acc_idx + 1
+            else:
+                entry["test_acc_best"] = np.nan
+                entry["test_acc_best_run"] = None
+            if not all(np.isnan(auc_arr)):
+                auc_idx = int(np.nanargmax(auc_arr))
+                entry["test_auc_best"] = float(auc_arr[auc_idx])
+                entry["test_auc_best_run"] = auc_idx + 1
+            else:
+                entry["test_auc_best"] = np.nan
+                entry["test_auc_best_run"] = None
+            peaks[model_name] = entry
+        return peaks
+
+    def _print_best_run_metrics(self, summary_df: pd.DataFrame) -> None:
+        peaks = self.get_peak_run_metrics()
+        if not peaks:
+            return
+        print("\n🏅 PEAK SINGLE-RUN SCORES (not top-k averaged — one best acc, one best auc per model):")
+        print(f"    Across all {self.n_runs} runs on clean data; acc and auc peaks may be from different runs.")
+        print("-"*80)
+        for model_name in self.model_configs.keys():
+            if model_name not in peaks:
+                continue
+            p = peaks[model_name]
+            print(f"  • {model_name.upper()}")
+            acc = p["test_acc_best"]
+            auc = p["test_auc_best"]
+            if not np.isnan(acc):
+                print(f"      Best Test Acc : {acc:.4f}   (run {p['test_acc_best_run']}/{self.n_runs})")
+            else:
+                print("      Best Test Acc : N/A")
+            if not np.isnan(auc):
+                print(f"      Best Test AUC : {auc:.4f}   (run {p['test_auc_best_run']}/{self.n_runs})")
+            else:
+                print("      Best Test AUC : N/A")
+
+    @staticmethod
+    def _top_k_indices(ranking_values: List[float], top_k: int) -> List[int]:
+        """Indices of the top_k runs; NaN scores are excluded from selection."""
+        arr = np.asarray(ranking_values, dtype=float)
+        if len(arr) == 0:
+            return []
+        k = min(top_k, len(arr))
+        valid = np.where(~np.isnan(arr))[0]
+        if len(valid) == 0:
+            return list(range(k))
+        order = valid[np.argsort(-arr[valid])]
+        return order[:k].tolist()
+
+    def _subset_top_k(self, stats: Dict[str, List], ranking_metric: Optional[str] = None) -> Dict[str, List]:
+        """Keep only the top_k runs (by ranking_metric) for each metric list."""
+        metric = ranking_metric or self.ranking_metric
+        top_indices = self._top_k_indices(stats[metric], self.top_k)
+        return {key: [vals[i] for i in top_indices] for key, vals in stats.items()}
+
+    def _subset_top_k_for_summary(self, all_stats: Dict[str, List]) -> Dict[str, List]:
+        """
+        Build per-metric top-k subsets. With ranking_metric='both', acc-related
+        metrics use top-k by test_acc and auc-related metrics use top-k by test_auc.
+        """
+        if self.ranking_metric != "both":
+            return self._subset_top_k(all_stats)
+
+        acc_runs = self._subset_top_k(all_stats, ranking_metric="test_acc")
+        auc_runs = self._subset_top_k(all_stats, ranking_metric="test_auc")
+        return {
+            "train_acc": acc_runs["train_acc"],
+            "test_acc": acc_runs["test_acc"],
+            "train_auc": auc_runs["train_auc"],
+            "test_auc": auc_runs["test_auc"],
+            "linguistic_richness": acc_runs["linguistic_richness"],
+            "relaxation_rate": acc_runs["relaxation_rate"],
+        }
+
+    def get_summary_statistics(self) -> pd.DataFrame:
+        """Summary statistics over the top_k best runs per model/noise level."""
+        summary = []
+
+        for model_name in self.model_configs.keys():
+            for noise_std in self.noise_levels:
+                all_stats = self.results[model_name][noise_std]
+                stats = self._subset_top_k_for_summary(all_stats)
+                if len(stats["test_acc"]) > 0:
+                    lr_values = stats["linguistic_richness"]
+                    if len(lr_values) > 0 and not all(np.isnan(v) for v in lr_values):
+                        lr_mean = np.nanmean(lr_values)
+                        lr_std = np.nanstd(lr_values)
+                    else:
+                        lr_mean, lr_std = np.nan, np.nan
+
+                    rr_values = stats["relaxation_rate"]
+                    if len(rr_values) > 0 and not all(np.isnan(v) for v in rr_values):
+                        rr_mean = np.nanmean(rr_values)
+                        rr_std = np.nanstd(rr_values)
+                    else:
+                        rr_mean, rr_std = np.nan, np.nan
+
+                    summary.append({
+                        "model": model_name,
+                        "noise_std": noise_std,
+                        "train_acc_mean": np.nanmean(stats["train_acc"]),
+                        "train_acc_std": np.nanstd(stats["train_acc"]),
+                        "test_acc_mean": np.nanmean(stats["test_acc"]),
+                        "test_acc_std": np.nanstd(stats["test_acc"]),
+                        "test_acc_best": np.nanmax(all_stats["test_acc"]),
+                        "train_auc_mean": np.nanmean(stats["train_auc"]),
+                        "train_auc_std": np.nanstd(stats["train_auc"]),
+                        "test_auc_mean": np.nanmean(stats["test_auc"]),
+                        "test_auc_std": np.nanstd(stats["test_auc"]),
+                        "test_auc_best": np.nanmax(all_stats["test_auc"]),
+                        "linguistic_richness_mean": lr_mean,
+                        "linguistic_richness_std": lr_std,
+                        "relaxation_rate_mean": rr_mean,
+                        "relaxation_rate_std": rr_std,
+                    })
+
+        return pd.DataFrame(summary)
