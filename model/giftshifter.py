@@ -8,11 +8,7 @@ import pandas as pd
 
 
 class GIFTSHIFTER(nn.Module):
-
-    # Number of distinct linguistic-relation categories on the SHARED,
-    # absolute scale used across every model in this codebase (equal /
-    # not-equal / greater-than / less-than — see
-    # linguistic_richness_utils.py). GIFTSHIFTER actually reaches all 4.
+    
     N_LINGUISTIC_CATEGORIES = 4
 
     def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
@@ -72,14 +68,7 @@ class GIFTSHIFTER(nn.Module):
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
-        # Clamp softplus(std) away from 0. softplus(std) can underflow to exactly
-        # 0.0 in float32 once `std` drifts to large negative values (nothing
-        # constrains it during training). Since std appears as sigma**2 in the
-        # denominator of the Gaussian membership function below, an
-        # unclamped near-zero sigma causes the forward value and gradient to
-        # blow up, which pushes std even further negative — a runaway
-        # feedback loop that crashes the whole model to NaN within a few
-        # steps. A real floor (not just a tiny epsilon) breaks that loop.
+
         std = F.softplus(self.std).clamp(min=1e-3).view(1, *self.std.shape)
         
         X = X.view(*X.shape, 1)
@@ -109,20 +98,6 @@ class GIFTSHIFTER(nn.Module):
         epsilon = 1e-10
         y = torch.log(mu + epsilon)
 
-        # FIX: firing strength was the PRODUCT of per-feature memberships
-        # (sum in log-space) over dim=1 = in_features. For high-dimensional
-        # data (e.g. 617 features on Isolet), multiplying 617 numbers in
-        # (0, 1] makes every rule's firing strength numerically degenerate
-        # (vanishingly small and nearly identical across rules/inputs even
-        # though log-sum-exp prevents literal underflow to 0.0). This made
-        # the firing strengths uninformative regardless of X, so the model
-        # collapsed to predicting a near-constant output.
-        #
-        # Using the geometric MEAN instead of the product (mean instead of
-        # sum in log-space) keeps the same fuzzy-AND semantics — still
-        # driven by how well X matches every feature's membership — but the
-        # result no longer shrinks with in_features, so it stays
-        # discriminative regardless of input dimensionality.
         max_log_y = torch.max(y, dim=1, keepdim=True)[0]
 
         y = torch.mean(y - max_log_y, dim=1)
@@ -137,7 +112,6 @@ class GIFTSHIFTER(nn.Module):
 
         Architecture
         ────────────
-        The antecedent has two parallel branches whose weights are the α's:
 
             α₁ = sigmoid(literal)      participation weight of the Gaussian
                                        (equality) branch and its negation
@@ -154,30 +128,17 @@ class GIFTSHIFTER(nn.Module):
             H₁ = -α₁ · log(α₁)        ∈ [0, 1/e]  max at α=1/e ≈ 0.368
             H₂ = -α₂ · log(α₂)        ∈ [0, 1/e]
 
-        Note: one-sided entropy (not binary entropy) is used deliberately.
-        It is highest when α is small (uncertain / near 0) and collapses to 0
-        when α → 1 (fully committed). This matches the semantic: a small α
-        means the branch barely participates, so its contribution should be
-        relaxed away.
-
-        Normalisation: divide by max value 1/e so r_{i,j} ∈ [0, 1].
 
         Per-feature, per-rule relaxation
         ─────────────────────────────────
             r_{i,j} = β · H₁_{i,j} + (1-β) · H₂_{i,j}
 
-        β mirrors its role in encode(): when β→1 the Gaussian branch dominates
-        and its entropy H₁ drives relaxation; when β→0 the sigmoidal branch
-        dominates and H₂ drives relaxation.
 
         TSK output
         ──────────
             y_i = Σ_j [ (1 - r_{i,j}) · a_{i,j} · (x_j - m_{i,j}) / φ_{i,j} ] + b_i
 
         where φ_{i,j} = softplus(std) > 0 is the fuzziness scale.
-
-        All intermediates use float64 for numerical stability; output is cast
-        back to the model's native dtype.
 
         Shapes
         ──────
@@ -189,10 +150,7 @@ class GIFTSHIFTER(nn.Module):
 
         X64      = X.double()
         means64  = self.mean.double() 
-        # Same floor as encode(): softplus(std) can underflow to 0 in float32,
-        # and phi64 is used as a divisor below, so an unclamped near-zero
-        # value causes exploding gradients that drive std further negative
-        # (runaway → NaN). Match the clamp used in encode() for consistency.
+
         phi64    = F.softplus(self.std).clamp(min=1e-3).double()
         slopes64 = self.local_slopes.double()
         biases64 = self.local_biases.double()

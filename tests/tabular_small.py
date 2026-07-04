@@ -7,7 +7,7 @@ UCI repository classics, sklearn built-ins, and a few local-file loaders.
 To add a new dataset here:
   1. Subclass Test (imported from tests/__init__.py via relative import)
   2. Set self.df (features DataFrame) and self.target (Series or column index)
-  3. Call super().__init__(...) with an appropriate train_size
+  3. Call super().__init__(...) — train/test split is 70/30 by default (see base.Test)
 """
 
 import pandas as pd
@@ -25,7 +25,7 @@ class Iris(Test):
         data = datasets.load_iris(as_frame=True)
         self.target = data.target
         self.df = data.data
-        super().__init__(train_size=105, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Digits(Test):
@@ -36,7 +36,7 @@ class Digits(Test):
         self.df = data.data
         self.df.columns = self.df.columns.astype(str)
         self.target.name = "digit"
-        super().__init__(train_size=1437, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ class Cryotheraphy(Test):
     def __init__(self, *args, **kwargs) -> None:
         self.df = pd.read_excel("./data/Cryotherapy.xlsx")
         self.target = "Result_of_Treatment"
-        super().__init__(train_size=63, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Immunotherapy(Test):
@@ -55,18 +55,68 @@ class Immunotherapy(Test):
         data = pd.read_excel("./data/Immunotherapy.xlsx")
         self.df = data.drop("Result_of_Treatment", axis=1)
         self.target = data["Result_of_Treatment"]
-        super().__init__(train_size=63, *args, **kwargs)
+        super().__init__(*args, **kwargs)
+
+
+def _fetch_pima_online():
+    """Fetch the UCI Pima Indians Diabetes dataset from OpenML (id=37).
+
+    The classic Pima dataset was removed from the UCI API, but OpenML mirrors
+    the identical 768-sample / 8-feature version. Returns ``(features_df,
+    target_series)`` with the target mapped to 1 (positive) / 0 (negative).
+
+    Requires an internet connection and scikit-learn.
+    """
+    from sklearn.datasets import fetch_openml
+
+    data = fetch_openml("diabetes", version=1, as_frame=True)
+    features = data.data.copy()
+    target = data.target.astype(str).map(
+        {"tested_positive": 1, "tested_negative": 0}
+    )
+    features.columns = features.columns.astype(str)
+    target.name = "class"
+    return features, target
 
 
 class PimaDiabetes(Test):
-    """Pima Indians Diabetes dataset (local .data file)."""
+    """Pima Indians Diabetes dataset — Case 1 (fetched online from OpenML/UCI).
+
+    Full Pima set: all 768 samples, 8 features, binary target. Medically
+    impossible zero values (e.g. glucose/BMI = 0) are kept as-is.
+
+    Requires an internet connection and scikit-learn.
+    """
     def __init__(self, *args, **kwargs) -> None:
-        df = pd.read_csv("./data/diabetes.data", header=None)
-        self.target = df.iloc[:, -1]
-        self.df = df.iloc[:, :-1]
-        self.df.columns = self.df.columns.astype(str)
-        self.target.name = str(self.target.name) if self.target.name is not None else "target"
-        super().__init__(train_size=614, *args, **kwargs)
+        self.df, self.target = _fetch_pima_online()
+        super().__init__(*args, **kwargs)
+
+
+class PimaDiabetesCase2(Test):
+    """Pima Indians Diabetes dataset — Case 2 (fetched online from OpenML/UCI).
+
+    Rows containing medically impossible zeros in any of plasma glucose,
+    diastolic blood pressure, triceps skin-fold thickness, 2-hour serum
+    insulin, or BMI are dropped, leaving ~392 complete samples.
+
+    Requires an internet connection and scikit-learn.
+    """
+    # Feature columns where 0 is physiologically impossible and therefore
+    # treated as a missing value that disqualifies the row.
+    _IMPOSSIBLE_ZERO_COLS = ["plas", "pres", "skin", "insu", "mass"]
+
+    def __init__(self, *args, **kwargs) -> None:
+        df, target = _fetch_pima_online()
+
+        before = len(df)
+        mask = (df[self._IMPOSSIBLE_ZERO_COLS] == 0).any(axis=1)
+        self.df = df[~mask].reset_index(drop=True)
+        self.target = target[~mask].reset_index(drop=True)
+        if len(self.df) < before:
+            print(f"PimaDiabetesCase2: dropped {before - len(self.df)} rows with impossible zeros "
+                  f"({len(self.df)} samples remain).")
+
+        super().__init__(*args, **kwargs)
 
 
 class BCW(Test):
@@ -87,10 +137,16 @@ class BreastCancer(Test):
         self.df = df.iloc[:, 2:]
         self.df.columns = self.df.columns.astype(str)
         self.target.name = str(self.target.name) if self.target.name is not None else "target"
-        super().__init__(train_size=455, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Autism(Test):
+    """Autism screening dataset (704 samples, binary ASD vs non-ASD).
+
+    Drops ``result`` (aggregate screening score — perfect proxy for the label)
+    and ``age_desc`` (redundant with ``age``). Uses simple imputation because
+    only ``age`` has missing values (2 rows).
+    """
     def __init__(self, *args, **kwargs) -> None:
         from scipy.io import arff
 
@@ -100,12 +156,15 @@ class Autism(Test):
             df[col] = df[col].str.decode("utf-8")
 
         self.target = df["Class/ASD"].map({"YES": 1, "NO": 0})
-        self.df = df.drop("Class/ASD", axis=1)
-        if "age_desc" in self.df.columns:
-            self.df = self.df.drop("age_desc", axis=1)
+        drop_cols = ["Class/ASD", "result"]
+        if "age_desc" in df.columns:
+            drop_cols.append("age_desc")
+        self.df = df.drop(columns=drop_cols)
         self.df.columns = self.df.columns.astype(str)
         self.target.name = "ASD"
-        super().__init__(train_size=560, *args, **kwargs)
+
+        kwargs.setdefault("imputation_type", "simple")
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +178,7 @@ class Glass(Test):
         self.target = df.iloc[:, -1]
         self.df.columns = self.df.columns.astype(str)
         self.target.name = str(self.target.name)
-        super().__init__(train_size=160, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Wine(Test):
@@ -127,14 +186,14 @@ class Wine(Test):
         self.df = pd.read_csv("./data/wine.data", header=None)
         self.target = 0
         self.df.columns = self.df.columns.astype(str)
-        super().__init__(train_size=124, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Thyroid(Test):
     def __init__(self, *args, **kwargs) -> None:
         self.df = pd.read_csv("./data/thyroid.data", header=None)
         self.target = 0
-        super().__init__(train_size=150, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 class Parkinson(Test):
@@ -150,8 +209,6 @@ class Parkinson(Test):
         print(f"Parkinson: {len(self.df)} samples, {self.df.shape[1]} features")
         print(f"Class distribution:\n{self.target.value_counts().sort_index()}")
 
-        if "train_size" not in kwargs:
-            kwargs["train_size"] = int(len(self.df) * 0.8)
         super().__init__(*args, **kwargs)
 
 
@@ -168,10 +225,10 @@ class Heart(Test):
         self.target = (df.iloc[:, -1] > 0).astype(int)
         self.df.columns = self.df.columns.astype(str)
         self.target.name = str(self.target.name)
-        super().__init__(train_size=189, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
-class Haberman(Test):
+'''class Haberman(Test):
     """Haberman's survival dataset."""
     def __init__(self, *args, **kwargs) -> None:
         df = pd.read_csv("./data/haberman.data", header=None)
@@ -179,7 +236,24 @@ class Haberman(Test):
         self.df = df.drop(columns=[3])
         self.df.columns = self.df.columns.astype(str)
         self.target.name = str(self.target.name)
-        super().__init__(train_size=214, *args, **kwargs)
+        super().__init__(train_size=214, *args, **kwargs)'''
+
+class Haberman(Test):
+    def __init__(self, *args, **kwargs) -> None:
+        from ucimlrepo import fetch_ucirepo
+
+        data = fetch_ucirepo(id=43)
+
+        self.df = data.data.features
+        self.target = data.data.targets
+
+        target_column_name = self.target.columns[0]
+        data = pd.concat([self.df, self.target], axis=1)
+        data = data.dropna(subset=[target_column_name])
+
+        self.df = data.iloc[:, :-1]
+        self.target = data.iloc[:, -1]
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -187,45 +261,37 @@ class Haberman(Test):
 # ---------------------------------------------------------------------------
 
 class DigitsUCI(Test):
-    """Optical digits from local .tra/.tes split files (tabular pixel features)."""
+    """Optical digits from local .tra/.tes files (tabular pixel features)."""
     def __init__(self, *args, **kwargs) -> None:
-        self.df = pd.read_csv("./data/unfis_data/optdigits.tra", header=None)
-        test_data = pd.read_csv("./data/unfis_data/optdigits.tes", header=None)
+        train_df = pd.read_csv("./data/unfis_data/optdigits.tra", header=None)
+        test_df = pd.read_csv("./data/unfis_data/optdigits.tes", header=None)
+        self.df = pd.concat([train_df, test_df], ignore_index=True)
         self.target = 64
-        super().__init__(*args, **kwargs, test_data=test_data, index=False, train_size=3823)
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Local-file loaders — text / sequence
+# Online loaders — text / sequence
 # ---------------------------------------------------------------------------
 
 class DNA(Test):
-    """Promoter DNA sequences, one-hot encoded per nucleotide position."""
+    """StatLog DNA dataset — splice-junction gene sequences (fetched online).
+
+    Fetched from OpenML ('dna', id=40670): 3186 samples, 180 binary features
+    (60 nucleotide positions one-hot encoded into 3 indicators each) and a
+    3-class target (1, 2, 3) for the splice-junction type.
+
+    Requires an internet connection and scikit-learn.
+    """
     def __init__(self, *args, **kwargs) -> None:
-        with open("./data/promoters.data") as f:
-            lines = f.readlines()
+        from sklearn.datasets import fetch_openml
 
-        nucleotides = {"A": 0, "C": 1, "G": 2, "T": 3}
-        data = []
-        for line in lines[1:]:
-            if line.strip():
-                parts = line.strip().split(",")
-                seq_class = parts[0]
-                sequence = "".join(parts[1:]).replace('"', "")
-                data.append([seq_class, sequence])
-
-        df = pd.DataFrame(data, columns=["class", "sequence"])
-        max_len = df["sequence"].str.len().max()
-        for i in range(max_len):
-            df[f"pos_{i}"] = df["sequence"].apply(
-                lambda x: nucleotides.get(x[i] if i < len(x) else "A", 0)
-            )
-
-        self.target = df["class"].map({"+": 1, "-": 0})
-        self.df = df.drop(["class", "sequence"], axis=1)
+        data = fetch_openml("dna", version=1, as_frame=True)
+        self.df = data.data.apply(pd.to_numeric).astype(int)
         self.df.columns = self.df.columns.astype(str)
-        self.target.name = "promoter"
-        super().__init__(train_size=80, *args, **kwargs)
+        self.target = data.target.astype(int)
+        self.target.name = "class"
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -259,45 +325,40 @@ class MFeat(Test):
         labels = [digit for digit in range(10) for _ in range(200)]
         self.target = pd.Series(labels[:n], name="digit")
         print(f"MFeat total: {n} samples, {self.df.shape[1]} features")
-        super().__init__(train_size=1600, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Local-file loaders — segmentation (two versions)
+# UCI fetch — image segmentation (tabular region features)
 # ---------------------------------------------------------------------------
 
 class SegmentaitionUCI(Test):
-    """Image segmentation dataset loaded from a single local .data file."""
+    """Image Segmentation dataset fetched live from UCI (id=50).
+
+    Each row is a 3×3 image region with 19 texture/color features and a
+    material class label (7 classes). Requires: pip install ucimlrepo
+    """
     def __init__(self, *args, **kwargs) -> None:
-        data = pd.read_csv(
-            "data/segmentation.data",
-            sep=",", header=None, comment=";",
-            skip_blank_lines=True, engine="python",
-        )
-        self.target = data[0]
-        self.df = data.iloc[:, 1:]
+        from ucimlrepo import fetch_ucirepo
 
-        before = len(self.df)
-        self.df = self.df.dropna()
-        self.target = self.target.loc[self.df.index]
-        if len(self.df) < before:
-            print(f"Segmentation: dropped {before - len(self.df)} rows with NaNs.")
+        data = fetch_ucirepo(id=50)
+        self.df = data.data.features
+        self.target = data.data.targets
 
+        target_column_name = self.target.columns[0]
+        combined = pd.concat([self.df, self.target], axis=1)
+        before = len(combined)
+        combined = combined.dropna(subset=[target_column_name])
+        if len(combined) < before:
+            print(f"Segmentation: dropped {before - len(combined)} rows with NaNs.")
+
+        self.df = combined.iloc[:, :-1]
+        self.target = combined.iloc[:, -1]
         self.df.columns = self.df.columns.astype(str)
         self.target.name = "class"
-        kwargs["train_size"] = kwargs.get("train_size", int(len(self.df) * 0.8))
         super().__init__(*args, **kwargs)
 
 
-class Segmentation(Test):
-    """Image segmentation dataset built from two split files (.data + .test)."""
-    def __init__(self, *args, **kwargs) -> None:
-        df1 = pd.read_csv("./data/unfis_data/segmentation.data", header=None)
-        df2 = pd.read_csv("./data/unfis_data/segmentation.test", header=None)
-        self.df = pd.concat([df1, df2], axis=0).reset_index(drop=True)
-        self.df = self.df.drop(1, axis=1)
-        self.target = 0
-        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +374,7 @@ class CarEvaluation(Test):
         le = LabelEncoder()
         self.target = le.fit_transform(df["class"])
         self.df = df.drop("class", axis=1)
-        super().__init__(train_size=1384, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -341,5 +402,4 @@ class SyntheticGaussian(Test):
         self.target = pd.Series(y[idx], name="cluster")
         self.df.columns = self.df.columns.astype(str)
 
-        train_size = kwargs.pop("train_size", int(n_samples * 0.8))
-        super().__init__(train_size=train_size, *args, **kwargs)
+        super().__init__(*args, **kwargs)

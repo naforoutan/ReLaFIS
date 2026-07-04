@@ -1,13 +1,41 @@
+import pandas as pd
 import torch
 from torch.utils.data import TensorDataset
 from pycaret.classification import ClassificationExperiment
 
 
 class Test:
+    TRAIN_SIZE = 0.7  # 70% train, 30% test
+
     def __init__(self, *args, **kwargs) -> None:
+        test_data = kwargs.pop('test_data', None)
+        if test_data is not None:
+            self.df = pd.concat([self.df, test_data], ignore_index=True)
+
+        self._setup_args = args
+        self._setup_kwargs = kwargs
+        self._setup()
+
+    def _setup(self, session_id=None) -> None:
+        kwargs = dict(self._setup_kwargs)
+        if session_id is not None:
+            kwargs['session_id'] = session_id
+        kwargs.setdefault('train_size', self.TRAIN_SIZE)
+        kwargs.setdefault('verbose', False)
+        kwargs.setdefault('imputation_type', 'iterative')
+
         self.clf = ClassificationExperiment()
-        self.clf.setup(data=self.df, target=self.target, normalize=True,
-                       imputation_type='iterative', *args, **kwargs)
+        self.clf.setup(
+            data=self.df,
+            target=self.target,
+            normalize=True,
+            *self._setup_args,
+            **kwargs,
+        )
+
+    def resplit(self, session_id: int) -> None:
+        """Re-draw the 70/30 train/test partition with a new random seed."""
+        self._setup(session_id=session_id)
 
     def get_data(self):
         return self.df, self.target
