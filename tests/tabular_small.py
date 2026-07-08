@@ -95,14 +95,14 @@ class PimaDiabetes(Test):
 class PimaDiabetesCase2(Test):
     """Pima Indians Diabetes dataset — Case 2 (fetched online from OpenML/UCI).
 
-    Rows containing medically impossible zeros in any of plasma glucose,
-    diastolic blood pressure, triceps skin-fold thickness, 2-hour serum
-    insulin, or BMI are dropped, leaving ~392 complete samples.
+    Rows with medically impossible zeros are removed in any of:
+    plasma glucose (``plas``), diastolic blood pressure (``pres``), triceps
+    skin-fold thickness (``skin``), 2-hour serum insulin (``insu``), or BMI
+    (``mass``). ~392 complete samples remain.
 
     Requires an internet connection and scikit-learn.
     """
-    # Feature columns where 0 is physiologically impossible and therefore
-    # treated as a missing value that disqualifies the row.
+    # OpenML column names; 0 in these fields is physiologically impossible.
     _IMPOSSIBLE_ZERO_COLS = ["plas", "pres", "skin", "insu", "mass"]
 
     def __init__(self, *args, **kwargs) -> None:
