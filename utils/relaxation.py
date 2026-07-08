@@ -26,6 +26,44 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
+
+from utils.plot_style import (
+    ROSE_NAVY_SEQUENCE,
+    apply_plot_style,
+    panel_title,
+    save_figure,
+    style_axes_minimal,
+)
+from utils.verbalize_rules import clean_feature_name
+
+_RELAXATION_CREAM = "#F5EDE4"
+_SHORT_FEATURE_LABELS = {
+    "age": "age",
+    "operation_year": "op. year",
+    "positive_auxillary_nodes": "nodes",
+    "positive_axillary_nodes": "nodes",
+}
+
+
+def _relaxation_cmap() -> LinearSegmentedColormap:
+    """Dark navy/plum (active) → dusty rose → warm cream (ignored)."""
+    colors = list(reversed(ROSE_NAVY_SEQUENCE)) + [_RELAXATION_CREAM]
+    return LinearSegmentedColormap.from_list("relaxation", colors)
+
+
+def _short_feature_label(name: str) -> str:
+    """Compact column labels for heatmaps."""
+    base = name.split("__")[-1].lower().replace(" ", "_")
+    if base in _SHORT_FEATURE_LABELS:
+        return _SHORT_FEATURE_LABELS[base]
+    if base.endswith("_age") or base == "age":
+        return "age"
+    if "operation" in base and "year" in base:
+        return "op. year"
+    if "node" in base or "auxillar" in base:
+        return "nodes"
+    return clean_feature_name(name)
 
 
 def _unwrap_model(model):
@@ -69,7 +107,7 @@ def plot_relaxation_heatmap(
     model,
     feature_names: Optional[List[str]] = None,
     rule_names: Optional[List[str]] = None,
-    cmap: str = "magma",
+    cmap=None,
     annotate: bool = True,
     figsize: Optional[Tuple[int, int]] = None,
     ax: Optional[plt.Axes] = None,
@@ -85,61 +123,87 @@ def plot_relaxation_heatmap(
         model: trained GIFTSHIFTER-family model (or its sklearn wrapper).
         feature_names: column labels (indexed by feature position).
         rule_names: row labels (one per rule).
-        cmap: colormap; the default (``magma``) maps low ``r`` -> dark.
+        cmap: colormap; default maps low ``r`` (active) → dark plum/navy.
         annotate: write the numeric ``r`` value inside each cell.
         figsize: figure size (auto-scaled from the matrix shape if None).
         ax: existing Axes to draw into (a new figure is made if None).
         title: custom plot title.
         save_path: if given, save the figure there.
     """
+    apply_plot_style()
+    if cmap is None:
+        cmap = _relaxation_cmap()
     r = relaxation_matrix(model)
     n_rules, n_features = r.shape
 
     if feature_names is None:
         feature_names = [f"F{j}" for j in range(n_features)]
     else:
-        feature_names = list(feature_names[:n_features])
+        feature_names = [_short_feature_label(n) for n in feature_names[:n_features]]
     if rule_names is None:
-        rule_names = [f"Rule {i}" for i in range(n_rules)]
+        rule_names = [f"Rule {i + 1}" for i in range(n_rules)]
 
     created = ax is None
     if created:
         if figsize is None:
-            figsize = (max(6, 0.6 * n_features + 2), max(3, 0.6 * n_rules + 1.5))
-        _, ax = plt.subplots(figsize=figsize)
+            figsize = (
+                max(6.5, 0.55 * n_features + 1.8),
+                max(5.2, 1.35 * n_rules + 2.8),
+            )
+        fig, ax = plt.subplots(figsize=figsize, facecolor="white")
+    else:
+        fig = ax.figure
 
-    im = ax.imshow(r, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
+    style_axes_minimal(ax)
+    im = ax.imshow(
+        r, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto",
+        interpolation="nearest",
+    )
 
     ax.set_xticks(np.arange(n_features))
-    ax.set_xticklabels(feature_names, rotation=45, ha="right", fontsize=9)
+    ax.set_xticklabels(feature_names, rotation=28, ha="right", fontsize=9)
     ax.set_yticks(np.arange(n_rules))
     ax.set_yticklabels(rule_names, fontsize=9)
-    ax.set_xlabel("Feature", fontsize=10)
-    ax.set_ylabel("Rule", fontsize=10)
+    ax.set_xlabel("Feature", labelpad=10)
+    ax.set_ylabel("Rule", labelpad=10)
+
+    ax.set_xticks(np.arange(-0.5, n_features, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, n_rules, 1), minor=True)
+    ax.grid(which="minor", color="white", linestyle="-", linewidth=1.6, zorder=2)
+    ax.tick_params(which="minor", size=0)
 
     if annotate:
-        # Choose readable text colour against the cell's brightness.
         rgba = im.cmap(im.norm(r))
         luminance = 0.299 * rgba[..., 0] + 0.587 * rgba[..., 1] + 0.114 * rgba[..., 2]
         for i in range(n_rules):
             for j in range(n_features):
                 ax.text(
                     j, i, f"{r[i, j]:.2f}",
-                    ha="center", va="center", fontsize=8,
-                    color="black" if luminance[i, j] > 0.5 else "white",
+                    ha="center", va="center", fontsize=8.5, fontweight="600",
+                    color="#1A202C" if luminance[i, j] > 0.52 else "white",
+                    zorder=3,
                 )
 
-    cbar = ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("relaxation  r  (0 = active, 1 = ignored)", fontsize=9)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.05)
+    cbar.set_label("Relaxation r", fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.ax.annotate(
+        "ignored", xy=(0.5, 1.03), xycoords="axes fraction",
+        ha="center", va="bottom", fontsize=7.5, color="#64748B",
+    )
+    cbar.ax.annotate(
+        "active", xy=(0.5, -0.09), xycoords="axes fraction",
+        ha="center", va="top", fontsize=7.5, color="#64748B",
+    )
 
-    ax.set_title(
-        title or "Consequent relaxation heatmap (r per rule x feature)",
-        fontsize=11, fontweight="bold",
+    panel_title(
+        ax,
+        title or "Haberman — consequent relaxation by rule and feature",
     )
 
     if created:
-        plt.tight_layout()
+        fig.tight_layout()
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"Saved relaxation heatmap to {save_path}")
+        paths = save_figure(fig, save_path)
+        print(f"Saved relaxation heatmap: {', '.join(paths)}")
     return ax

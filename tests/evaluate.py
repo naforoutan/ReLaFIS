@@ -11,6 +11,24 @@ from typing import Dict, List, Tuple, Optional, Type, Union, Any
 from torch.optim.lr_scheduler import OneCycleLR
 import warnings
 import random
+import secrets
+
+from train.early_stop import EarlyStopping
+from utils.plot_style import (
+    NEGATIVE_BAR,
+    NEUTRAL_LINE,
+    POSITIVE_BAR,
+    TICK_COLOR,
+    apply_plot_style,
+    is_highlight_model,
+    model_color,
+    model_display_name,
+    model_line_kwargs,
+    plot_bubble_chart,
+    save_figure,
+    style_axes,
+    style_legend,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -32,8 +50,9 @@ class Evaluator:
                  binary: bool = True,
                  noise_levels: List[float] = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5],
                  n_runs: int = 3,
-                 random_state: int = 42,
-                 use_noise: bool = True,  
+                 random_state: Optional[int] = 42,
+                 use_noise: bool = True,
+                 use_early_stopping: Optional[bool] = None,
                  noise_type: str = "gaussian"):
 
         self.experiment = experiment
@@ -44,7 +63,8 @@ class Evaluator:
         self.noise_levels = noise_levels if use_noise else [0.0]
         self.n_runs = n_runs
         self.random_state = random_state
-        self.use_noise = use_noise 
+        self.use_noise = use_noise
+        self.use_early_stopping = use_early_stopping
         self.noise_type = noise_type
         
         # Validate noise type
@@ -68,6 +88,8 @@ class Evaluator:
         # other metric.
         self._last_wrapper = {}
 
+        self._use_kfold = getattr(self.experiment, 'is_kfold', lambda: False)()
+
         X_sample, _ = self.experiment.train_numpy()
         self.n_features = X_sample.shape[1]
 
@@ -81,8 +103,8 @@ class Evaluator:
         self.n_classes = len(np.unique(np.ravel(y_full)))
 
         # Populated afresh at the start of every run via _refresh_split().
-        self.X_train = self.X_test = None
-        self.y_train = self.y_test = None
+        self.X_train = self.X_test = self.X_val = None
+        self.y_train = self.y_test = self.y_val = None
 
     @staticmethod
     def _labels_1d(y: np.ndarray) -> np.ndarray:
@@ -90,12 +112,41 @@ class Evaluator:
             return np.argmax(y, axis=1)
         return np.ravel(y)
 
-    def _refresh_split(self, session_id: int) -> None:
-        self.experiment.resplit(session_id=session_id)
+    def _run_seed(self, run: int, noise_std: float) -> int:
+        """Per-run training seed. Fixed when random_state is set; OS-random otherwise."""
+        if self.random_state is not None:
+            return self.random_state + run * 100 + int(noise_std * 1000)
+        return secrets.randbelow(2**32 - 1)
+
+    def _set_run_seed(self, run_seed: int) -> None:
+        np.random.seed(run_seed)
+        random.seed(run_seed)
+        torch.manual_seed(run_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(run_seed)
+
+    def _refresh_split(self, session_id: int, fold_index: Optional[int] = None) -> None:
+        if self._use_kfold:
+            if fold_index is not None:
+                self.experiment.set_fold(fold_index)
+            else:
+                self.experiment.resplit(session_id=session_id)
+        else:
+            self.experiment.resplit(session_id=session_id)
         self.X_train, self.y_train = self.experiment.train_numpy()
         self.X_test, self.y_test = self.experiment.test_numpy()
         self.y_train = self._labels_1d(self.y_train)
         self.y_test = self._labels_1d(self.y_test)
+        if getattr(self.experiment, 'has_validation_split', lambda: False)():
+            self.X_val, self.y_val = self.experiment.val_numpy()
+            self.y_val = self._labels_1d(self.y_val)
+        else:
+            self.X_val = self.y_val = None
+
+    def _split_description(self) -> str:
+        if hasattr(self.experiment, 'split_description'):
+            return self.experiment.split_description()
+        return "fresh 70/30 redrawn each run (PyCaret session_id)"
 
     def _apply_noise(self, 
                      X: np.ndarray, 
@@ -181,7 +232,8 @@ class Evaluator:
                            wrapper_class: Type,
                            noise_std: float, 
                            run_id: int,
-                           run_seed: int = 42) -> Tuple[float, float, float, float, float, float, Any]:
+                           run_seed: int = 42,
+                           fold_index: Optional[int] = None) -> Tuple[float, float, float, float, float, float, Any]:
         """
         Train and evaluate a single model with given noise level
         Returns: (train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, trained_wrapper)
@@ -216,7 +268,7 @@ class Evaluator:
         Like linguistic_richness, np.nan is reserved for "not applicable"
         or "failed run", never used to mean "exactly zero relaxation".
         """
-        self._refresh_split(session_id=run_seed)
+        self._refresh_split(session_id=run_seed, fold_index=fold_index)
 
         # Feature count can change across resplits when PyCaret fits encoders on
         # train only (e.g. rare categorical levels in Autism's country column).
@@ -244,7 +296,7 @@ class Evaluator:
             random.seed(worker_seed)
 
         g = torch.Generator()
-        g.manual_seed(run_seed if self.random_state is not None else torch.initial_seed())
+        g.manual_seed(run_seed)
 
         train_loader = DataLoader(train_dataset, batch_size=self.learning_params['batch_size'], shuffle=True,
                                   worker_init_fn=seed_worker, generator=g)
@@ -305,7 +357,16 @@ class Evaluator:
         else:
             alpha_decaying = 0.95
         
-        # Training loop
+        # Training loop — early stopping only when a validation split exists and
+        # use_early_stopping is not explicitly disabled (default: auto).
+        use_val_for_training = (
+            self.X_val is not None
+            and (self.use_early_stopping is None or self.use_early_stopping)
+        )
+        early_stopping = (
+            EarlyStopping(patience=10, delta=-0.00001) if use_val_for_training else None
+        )
+
         for epoch in range(self.learning_params['epochs']):
             model.train()
             
@@ -335,7 +396,31 @@ class Evaluator:
                     pass
             
             alpha = max(safe_min_alpha, alpha * alpha_decaying)
+
+            if early_stopping is not None:
+                model.eval()
+                X_val_noisy = self._apply_noise(self.X_val, noise_std, self.noise_type)
+                val_tensor_x = torch.tensor(X_val_noisy, dtype=torch.float32, device=self.device)
+                if self.binary:
+                    val_tensor_y = torch.tensor(self.y_val, dtype=torch.float32, device=self.device)
+                else:
+                    val_tensor_y = torch.tensor(self.y_val, dtype=torch.long, device=self.device)
+
+                with torch.no_grad():
+                    val_outputs = model(val_tensor_x)
+                    val_preds = val_outputs[0]
+                    if self.binary:
+                        val_loss = cross(val_preds.squeeze(), val_tensor_y.squeeze())
+                    else:
+                        val_loss = cross(val_preds, val_tensor_y.long())
+
+                early_stopping(val_loss.item(), model)
+                if early_stopping.early_stop:
+                    break
         
+        if early_stopping is not None and early_stopping.best_model_state is not None:
+            early_stopping.load_best_model(model)
+
         # Switch to evaluation mode
         model.eval()
         
@@ -486,21 +571,13 @@ class Evaluator:
                 if 'binary' not in model_params:
                     model_params['binary'] = self.binary
                 
-                for run in range(self.n_runs):
+                for run in range(self._effective_n_runs()):
                     if verbose:
-                        print(f"  Run {run + 1}/{self.n_runs}...", end=" ", flush=True)
+                        print(f"  {self._run_label(run)}...", end=" ", flush=True)
                     
-                    # Set seed for this run
-                    if self.random_state is not None:
-                        run_seed = self.random_state + run * 100 + int(noise_std * 1000)
-                    else:
-                        run_seed = np.random.randint(0, 2**32 - 1)
-                    
-                    np.random.seed(run_seed)
-                    random.seed(run_seed)
-                    torch.manual_seed(run_seed)
-                    if torch.cuda.is_available():
-                        torch.cuda.manual_seed_all(run_seed)
+                    run_seed = self._run_seed(run, noise_std)
+                    self._set_run_seed(run_seed)
+                    fold_index = run if self._use_kfold else None
                     
                     train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, wrapper = self._train_and_evaluate(
                         config['model_class'],
@@ -508,7 +585,8 @@ class Evaluator:
                         config['wrapper_class'],
                         noise_std,
                         run,
-                        run_seed
+                        run_seed,
+                        fold_index=fold_index,
                     )
 
                     # Cache the most recently trained wrapper for this model
@@ -596,58 +674,65 @@ class Evaluator:
     
     def plot_robustness_curves(self, save_path: Optional[str] = None):
         """Plot robustness curves for all models"""
+        apply_plot_style()
         summary_df = self.get_summary_statistics()
         
         if len(summary_df) == 0:
             print("No data to plot. Run evaluate() first.")
             return
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        
-        # Plot Accuracy
-        ax1 = axes[0]
-        for model_name in self.model_configs.keys():
-            model_data = summary_df[summary_df['model'] == model_name]
-            if len(model_data) > 0:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5.5), constrained_layout=True)
+        x_label = "Noise standard deviation (σ)" if self.use_noise else "Experiment"
+        model_names = sorted(
+            self.model_configs.keys(),
+            key=lambda m: (is_highlight_model(m), m),
+        )
+
+        for ax, metric, ylabel, panel in zip(
+            axes,
+            ("test_acc_mean", "test_auc_mean"),
+            ("Test accuracy", "Test AUC"),
+            ("(A) Accuracy vs. noise", "(B) AUC vs. noise"),
+        ):
+            style_axes(ax)
+            for i, model_name in enumerate(model_names):
+                model_data = summary_df[summary_df['model'] == model_name]
+                if len(model_data) == 0:
+                    continue
                 x = model_data['noise_std'].values
-                y_mean = model_data['test_acc_mean'].values
-                y_std = model_data['test_acc_std'].values
-                
-                ax1.plot(x, y_mean, 'o-', label=model_name.upper(), linewidth=2, markersize=8)
-                ax1.fill_between(x, y_mean - y_std, y_mean + y_std, alpha=0.2)
-        
-        ax1.set_xlabel('Noise Standard Deviation (σ)' if self.use_noise else 'Experiment', fontsize=12)
-        ax1.set_ylabel('Test Accuracy', fontsize=12)
-        ax1.set_title('Model Comparison: Test Accuracy', fontsize=14)
-        ax1.legend(fontsize=11)
-        ax1.grid(True, alpha=0.3)
-        
-        # Plot AUC
-        ax2 = axes[1]
-        for model_name in self.model_configs.keys():
-            model_data = summary_df[summary_df['model'] == model_name]
-            if len(model_data) > 0:
-                x = model_data['noise_std'].values
-                y_mean = model_data['test_auc_mean'].values
-                y_std = model_data['test_auc_std'].values
-                
-                ax2.plot(x, y_mean, 'o-', label=model_name.upper(), linewidth=2, markersize=8)
-                ax2.fill_between(x, y_mean - y_std, y_mean + y_std, alpha=0.2)
-        
-        ax2.set_xlabel('Noise Standard Deviation (σ)' if self.use_noise else 'Experiment', fontsize=12)
-        ax2.set_ylabel('Test AUC', fontsize=12)
-        ax2.set_title('Model Comparison: Test AUC', fontsize=14)
-        ax2.legend(fontsize=11)
-        ax2.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
+                y_mean = model_data[metric].values
+                y_std = model_data[f"{metric.replace('_mean', '_std')}"].values
+                color = model_color(model_name, i)
+                label = model_display_name(model_name)
+                if is_highlight_model(model_name):
+                    label = f"{label} (proposed)"
+                line_kw = model_line_kwargs(model_name)
+                ax.plot(
+                    x, y_mean, "o-", label=label, color=color,
+                    markerfacecolor="white", markeredgewidth=1.2, markeredgecolor=color,
+                    **line_kw,
+                )
+                ax.fill_between(x, y_mean - y_std, y_mean + y_std,
+                                color=color, alpha=0.15, zorder=line_kw["zorder"] - 1)
+
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(ylabel)
+            ax.set_title(panel, loc="left", fontsize=12, fontweight="600", pad=10)
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2f}"))
+            legend = ax.legend(title="Model", loc="best")
+            style_legend(legend)
+
+        fig.suptitle("Robustness across noise levels (mean ± std over runs)",
+                     fontsize=14, fontweight="bold", y=1.03)
         
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            paths = save_figure(fig, save_path)
+            print(f"Saved robustness curves: {', '.join(paths)}")
         plt.show()
     
     def plot_relative_performance(self, save_path: Optional[str] = None):
         """Plot relative performance between models"""
+        apply_plot_style()
         summary_df = self.get_summary_statistics()
         
         if len(summary_df) == 0:
@@ -669,57 +754,89 @@ class Evaluator:
         x = model1_data['noise_std'].values
         acc_improvement = model1_data['test_acc_mean'].values - model2_data['test_acc_mean'].values
         auc_improvement = model1_data['test_auc_mean'].values - model2_data['test_auc_mean'].values
+        m1 = model_display_name(model_names[0])
+        m2 = model_display_name(model_names[1])
+        x_label = "Noise standard deviation (σ)" if self.use_noise else "Experiment"
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
         
-        # Accuracy improvement
-        ax1 = axes[0]
-        colors = ['green' if v > 0 else 'red' for v in acc_improvement]
-        bars1 = ax1.bar(range(len(x)), acc_improvement, color=colors, alpha=0.7, edgecolor='black')
-        ax1.axhline(y=0, color='black', linestyle='-', linewidth=1)
-        ax1.set_xticks(range(len(x)))
-        ax1.set_xticklabels([f'{v:.2f}' for v in x])
-        ax1.set_xlabel('Noise Standard Deviation (σ)' if self.use_noise else 'Experiment', fontsize=12)
-        ax1.set_ylabel(f'Accuracy Improvement ({model_names[0].upper()} - {model_names[1].upper()})', fontsize=12)
-        ax1.set_title('Relative Test Accuracy', fontsize=14)
-        ax1.grid(True, alpha=0.3, axis='y')
-        
-        for bar, val in zip(bars1, acc_improvement):
-            height = bar.get_height()
-            offset = 0.01 * max(abs(acc_improvement)) if len(acc_improvement) > 0 else 0.01
-            ax1.text(
-                bar.get_x() + bar.get_width() / 2.,
-                height + offset if val >= 0 else height - offset,
-                f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9
+        for ax, values, ylabel, panel in zip(
+            axes,
+            (acc_improvement, auc_improvement),
+            (f"Δ accuracy ({m1} − {m2})", f"Δ AUC ({m1} − {m2})"),
+            ("(A) Relative accuracy", "(B) Relative AUC"),
+        ):
+            style_axes(ax)
+            colors = [POSITIVE_BAR if v > 0 else NEGATIVE_BAR for v in values]
+            bars = ax.bar(
+                range(len(x)), values, color=colors, alpha=0.85,
+                edgecolor="white", linewidth=0.8, width=0.72,
             )
-        
-        # AUC improvement
-        ax2 = axes[1]
-        colors = ['green' if v > 0 else 'red' for v in auc_improvement]
-        bars2 = ax2.bar(range(len(x)), auc_improvement, color=colors, alpha=0.7, edgecolor='black')
-        ax2.axhline(y=0, color='black', linestyle='-', linewidth=1)
-        ax2.set_xticks(range(len(x)))
-        ax2.set_xticklabels([f'{v:.2f}' for v in x])
-        ax2.set_xlabel('Noise Standard Deviation (σ)' if self.use_noise else 'Experiment', fontsize=12)
-        ax2.set_ylabel(f'AUC Improvement ({model_names[0].upper()} - {model_names[1].upper()})', fontsize=12)
-        ax2.set_title('Relative Test AUC', fontsize=14)
-        ax2.grid(True, alpha=0.3, axis='y')
-        
-        for bar, val in zip(bars2, auc_improvement):
-            height = bar.get_height()
-            offset = 0.01 * max(abs(auc_improvement)) if len(auc_improvement) > 0 else 0.01
-            ax2.text(
-                bar.get_x() + bar.get_width() / 2.,
-                height + offset if val >= 0 else height - offset,
-                f'{val:.3f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9
-            )
-        
-        plt.tight_layout()
+            ax.axhline(y=0, color=NEUTRAL_LINE, linestyle="-", linewidth=0.9, alpha=0.7)
+            ax.set_xticks(range(len(x)))
+            ax.set_xticklabels([f"{v:.2f}" for v in x])
+            ax.set_xlabel(x_label)
+            ax.set_ylabel(ylabel)
+            ax.set_title(panel, loc="left", fontsize=12, fontweight="600", pad=10)
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:+.3f}"))
+
+            ymax = max(abs(values)) if len(values) else 0.01
+            offset = 0.04 * ymax if ymax > 0 else 0.01
+            for bar, val in zip(bars, values):
+                height = bar.get_height()
+                ax.text(
+                    bar.get_x() + bar.get_width() / 2.,
+                    height + offset if val >= 0 else height - offset,
+                    f"{val:+.3f}", ha="center",
+                    va="bottom" if val >= 0 else "top",
+                    fontsize=8, color=TICK_COLOR,
+                )
+
+        fig.suptitle(f"Relative performance: {m1} vs. {m2} (mean over runs)",
+                     fontsize=14, fontweight="bold", y=1.03)
         
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            paths = save_figure(fig, save_path)
+            print(f"Saved relative performance: {', '.join(paths)}")
         plt.show()
-    
+
+    def plot_model_landscape(
+        self,
+        save_path: Optional[str] = None,
+        interactive: bool = False,
+        noise_std: Optional[float] = None,
+    ):
+        """Bubble chart: accuracy vs. AUC (clean data), bubble size = linguistic richness."""
+        summary_df = self.get_summary_statistics()
+        if len(summary_df) == 0:
+            print("No data to plot. Run evaluate() first.")
+            return
+
+        if noise_std is None:
+            noise_std = self._clean_noise_level()
+        clean = summary_df[np.isclose(summary_df["noise_std"], noise_std)].copy()
+        if len(clean) == 0:
+            print("No clean-data summary available for model landscape.")
+            return
+        clean["linguistic_richness_mean"] = clean["linguistic_richness_mean"].fillna(0)
+        clean["relaxation_rate_mean"] = clean["relaxation_rate_mean"].fillna(0)
+
+        plot_bubble_chart(
+            clean,
+            x="test_acc_mean",
+            y="test_auc_mean",
+            size="linguistic_richness_mean",
+            color="relaxation_rate_mean",
+            xerr="test_acc_std",
+            yerr="test_auc_std",
+            xlabel="Test accuracy",
+            ylabel="Test AUC",
+            size_label="Linguistic richness",
+            color_label="Relaxation rate",
+            save_path=save_path,
+            interactive=interactive,
+        )
+
     def compute_robustness_score(self) -> Dict:
         """Compute robustness scores for all models"""
         summary_df = self.get_summary_statistics()
@@ -839,7 +956,19 @@ class Evaluator:
                 'decision_type': 'performance_based',
             }
 
+    def _effective_n_runs(self) -> int:
+        if self._use_kfold:
+            return self.experiment.n_folds
+        return self.n_runs
+
+    def _run_label(self, run: int) -> str:
+        if self._use_kfold:
+            return f"Fold {run + 1}/{self.experiment.n_folds}"
+        return f"Run {run + 1}/{self.n_runs}"
+
     def _aggregation_note(self) -> str:
+        if self._use_kfold:
+            return f"Number of folds: {self.experiment.n_folds} (mean ± std across folds)"
         return f"Number of runs per configuration: {self.n_runs}"
 
     def _summary_metric_suffix(self) -> str:
@@ -883,7 +1012,7 @@ class Evaluator:
         if self.use_noise:
             print(f"Noise Type: {self.noise_type}")
         print(self._aggregation_note())
-        print("Train/test split: fresh 70/30 redrawn each run (PyCaret session_id)")
+        print(f"Train/validation/test split: {self._split_description()}")
         print("="*80)
         
         summary_df = self.get_summary_statistics()
@@ -1065,31 +1194,34 @@ class TopKEvaluator(Evaluator):
         self.ranking_metric = ranking_metric
 
     def _aggregation_note(self) -> str:
+        if self._use_kfold:
+            return (
+                f"Total folds: {self.experiment.n_folds} "
+                f"(mean ± std over all folds)"
+            )
         if self.ranking_metric == "both":
             return (
                 f"Total runs per configuration: {self.n_runs} "
-                f"(mean ± std over top {self.top_k}: "
+                f"(mean ± std over top {self.top_k} runs: "
                 f"acc ranked by test_acc, auc ranked by test_auc)"
             )
         return (
             f"Total runs per configuration: {self.n_runs} "
-            f"(mean ± std over top {self.top_k} by {self.ranking_metric})"
+            f"(mean ± std over top {self.top_k} runs by {self.ranking_metric})"
         )
 
     def _summary_metric_suffix(self) -> str:
-        if self.ranking_metric == "both":
-            return f" (top-{self.top_k})"
-        return f" (top-{self.top_k})"
+        return f" (top-{self.top_k} runs)"
 
     def _summary_column_labels(self) -> Dict[str, str]:
         """Per-column header labels for the performance summary table."""
         k = self.top_k
         if self.ranking_metric == "both":
             return {
-                "test_acc": f"Test Acc ± Std (top-{k}, by acc)",
-                "test_auc": f"Test AUC ± Std (top-{k}, by auc)",
-                "linguistic_richness": f"Ling. Richness ± Std (top-{k}, by acc)",
-                "relaxation_rate": f"Relax. Rate ± Std (top-{k}, by acc)",
+                "test_acc": f"Test Acc ± Std (top-{k} runs, by acc)",
+                "test_auc": f"Test AUC ± Std (top-{k} runs, by auc)",
+                "linguistic_richness": f"Ling. Richness ± Std (top-{k} runs, by acc)",
+                "relaxation_rate": f"Relax. Rate ± Std (top-{k} runs, by acc)",
             }
         suffix = self._summary_metric_suffix()
         return {
