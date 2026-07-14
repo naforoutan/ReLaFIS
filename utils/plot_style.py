@@ -415,9 +415,9 @@ def save_figure(
     fig: plt.Figure,
     path: Union[str, Path],
     formats: Sequence[str] = ("png", "pdf"),
-    dpi: int = 300,
+    dpi: int = 600,
 ) -> List[str]:
-    """Save *fig* as PNG (slides) and PDF (papers); pass ``svg`` in *formats* if needed."""
+    """Save *fig* as PNG (preview) and PDF (papers); pass ``svg`` in *formats* if needed."""
     base = Path(path)
     if base.suffix:
         base = base.with_suffix("")
@@ -426,6 +426,6 @@ def save_figure(
     facecolor = fig.get_facecolor()
     for fmt in formats:
         out = base.with_suffix(f".{fmt}")
-        fig.savefig(out, dpi=dpi, bbox_inches="tight", facecolor=facecolor)
+        fig.savefig(out, dpi=dpi, bbox_inches="tight", pad_inches=0.03, facecolor=facecolor)
         saved.append(str(out))
     return saved
