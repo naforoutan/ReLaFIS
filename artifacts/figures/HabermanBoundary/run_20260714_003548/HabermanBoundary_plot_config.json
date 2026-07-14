@@ -1,0 +1,108 @@
+{
+  "figure_name": "HabermanBoundary",
+  "figure_stem": "HabermanBoundary",
+  "figure_size": [
+    7.4,
+    2.75
+  ],
+  "point_colors": {
+    "0": "#0D1B2A",
+    "1": "#E76F51"
+  },
+  "class_colors": [
+    "#0D1B2A",
+    "#E76F51"
+  ],
+  "rule_colors": [
+    "#D1E1F0",
+    "#FDECDA",
+    "#919FB9"
+  ],
+  "class_fill_colors": [
+    "#D2E2F1",
+    "#FEEBDA"
+  ],
+  "boundary_color": "#355A73",
+  "marker": "o",
+  "marker_size": 32,
+  "marker_alpha": 0.98,
+  "marker_edgecolor": "white",
+  "marker_edgewidth": 0.5,
+  "boundary_width": 0.8,
+  "rule_boundary_width": 0.8,
+  "contour_levels_decision": [
+    0.5
+  ],
+  "panel_titles": [
+    "(a) Dominant rule regions",
+    "(b) Predicted class regions"
+  ],
+  "axis_labels": {
+    "x": "Positive axillary nodes (standardized)",
+    "y": "Age (standardized)"
+  },
+  "x_limits": [
+    -1.332733605105565,
+    6.731632542745692
+  ],
+  "y_limits": [
+    -2.735824061049299,
+    3.5728485488240946
+  ],
+  "font_family": [
+    "Times New Roman",
+    "Times",
+    "DejaVu Serif"
+  ],
+  "font_sizes": {
+    "panel_title": 10.5,
+    "axis_label": 9.5,
+    "tick": 8.5,
+    "legend_title": 8.5,
+    "legend": 8.0
+  },
+  "legend_locations": {
+    "rules": "upper right",
+    "classes": "upper right"
+  },
+  "legend_labels": {
+    "rules": [
+      "Rule 1",
+      "Rule 2",
+      "Rule 3"
+    ],
+    "classes": [
+      "Survived $\\geq$ 5 years",
+      "Died within 5 years"
+    ]
+  },
+  "class_mapping": {
+    "0": "Survived $\\geq$ 5 years",
+    "1": "Died within 5 years"
+  },
+  "original_to_display_rule_mapping": {
+    "2": 0,
+    "1": 1,
+    "0": 2
+  },
+  "display_to_original_rule_mapping": {
+    "0": 2,
+    "1": 1,
+    "2": 0
+  },
+  "axis_scale": "standardized",
+  "feature_x": 2,
+  "feature_y": 0,
+  "feature_names": [
+    "num_imputer__age",
+    "num_imputer__operation_year",
+    "num_imputer__positive_auxillary_nodes"
+  ],
+  "n_rules": 3,
+  "mesh_resolution": 500,
+  "decision_threshold": 0.5,
+  "output_filenames": {
+    "pdf": "HabermanBoundary.pdf",
+    "png": "HabermanBoundary.png"
+  }
+}

@@ -2,8 +2,10 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 
+from utils.paper_plot_style import apply_paper_style, save_paper_figure, style_axis
 
-def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
+
+def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7), save_path=None):
     """
     Plot membership functions in a grid: rows = rules, columns = features.
     
@@ -12,7 +14,9 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
     - feature_names: list of feature names (optional)
     - num_points: number of points for the smooth curve
     - xlim: tuple (xmin, xmax), default (-7, 7)
+    - save_path: optional stem for PDF/PNG export
     """
+    apply_paper_style()
     model.eval()
 
     # Extract parameters to CPU
@@ -69,22 +73,25 @@ def plot_gift_mfs(model, feature_names=None, num_points=1000, xlim=(-7, 7)):
             mu_combined = w * mu_pos_neg + (1 - w) * mu_great_less
             mu_final = mu_combined
 
-            ax.plot(x_vals, mu_final, color='b')
+            ax.plot(x_vals, mu_final, color='b', linewidth=1.8)
             ax.set_ylim(0, 1)
             ax.set_xlim(xlim)
-            ax.grid(True, alpha=0.3)
+            style_axis(ax, grid=True)
 
             # Add labels only on the edges for readability
             if rule_idx == 0:
-                ax.set_title(feature_names[feat_idx])
+                ax.set_title(feature_names[feat_idx], fontsize=11, fontweight="bold", pad=4)
             if rule_idx == rules - 1:
                 ax.set_xlabel('Input')
             if feat_idx == 0:
                 ax.set_ylabel(f'Rule {rule_idx+1}')
 
-    fig.suptitle('GIFT Membership Functions (rows=rules, cols=features)', fontsize=14)
+    # Captions belong in LaTeX for paper figures.
     plt.tight_layout()
-    plt.show()
+    if save_path:
+        save_paper_figure(fig, save_path)
+    else:
+        plt.show()
 
 
 

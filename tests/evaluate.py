@@ -14,6 +14,16 @@ import random
 import secrets
 
 from train.early_stop import EarlyStopping
+from utils.paper_plot_style import (
+    DOUBLE_COLUMN_WIDTH,
+    LEGEND_SIZE,
+    TITLE_SIZE,
+    apply_paper_style,
+    make_legend_compact,
+    panel_label,
+    save_paper_figure,
+    style_axis,
+)
 from utils.plot_style import (
     NEGATIVE_BAR,
     NEUTRAL_LINE,
@@ -674,14 +684,16 @@ class Evaluator:
     
     def plot_robustness_curves(self, save_path: Optional[str] = None):
         """Plot robustness curves for all models"""
-        apply_plot_style()
+        apply_paper_style()
         summary_df = self.get_summary_statistics()
         
         if len(summary_df) == 0:
             print("No data to plot. Run evaluate() first.")
             return
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5.5), constrained_layout=True)
+        fig, axes = plt.subplots(
+            1, 2, figsize=(DOUBLE_COLUMN_WIDTH, 3.2), constrained_layout=True,
+        )
         x_label = "Noise standard deviation (σ)" if self.use_noise else "Experiment"
         model_names = sorted(
             self.model_configs.keys(),
@@ -692,9 +704,9 @@ class Evaluator:
             axes,
             ("test_acc_mean", "test_auc_mean"),
             ("Test accuracy", "Test AUC"),
-            ("(A) Accuracy vs. noise", "(B) AUC vs. noise"),
+            ("(a) Accuracy vs. noise", "(b) AUC vs. noise"),
         ):
-            style_axes(ax)
+            style_axis(ax, grid=True)
             for i, model_name in enumerate(model_names):
                 model_data = summary_df[summary_df['model'] == model_name]
                 if len(model_data) == 0:
@@ -709,7 +721,7 @@ class Evaluator:
                 line_kw = model_line_kwargs(model_name)
                 ax.plot(
                     x, y_mean, "o-", label=label, color=color,
-                    markerfacecolor="white", markeredgewidth=1.2, markeredgecolor=color,
+                    markerfacecolor="white", markeredgewidth=1.0, markeredgecolor=color,
                     **line_kw,
                 )
                 ax.fill_between(x, y_mean - y_std, y_mean + y_std,
@@ -717,22 +729,23 @@ class Evaluator:
 
             ax.set_xlabel(x_label)
             ax.set_ylabel(ylabel)
-            ax.set_title(panel, loc="left", fontsize=12, fontweight="600", pad=10)
+            panel_label(ax, panel)
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:.2f}"))
-            legend = ax.legend(title="Model", loc="best")
-            style_legend(legend)
+            legend = ax.legend(
+                title="Model", loc="best", fontsize=LEGEND_SIZE, title_fontsize=LEGEND_SIZE,
+                framealpha=0.90, borderpad=0.3, labelspacing=0.25,
+                handlelength=1.4, handletextpad=0.35,
+            )
+            make_legend_compact(legend)
 
-        fig.suptitle("Robustness across noise levels (mean ± std over runs)",
-                     fontsize=14, fontweight="bold", y=1.03)
-        
         if save_path:
-            paths = save_figure(fig, save_path)
+            paths = save_paper_figure(fig, save_path)
             print(f"Saved robustness curves: {', '.join(paths)}")
         plt.show()
     
     def plot_relative_performance(self, save_path: Optional[str] = None):
         """Plot relative performance between models"""
-        apply_plot_style()
+        apply_paper_style()
         summary_df = self.get_summary_statistics()
         
         if len(summary_df) == 0:
@@ -758,15 +771,17 @@ class Evaluator:
         m2 = model_display_name(model_names[1])
         x_label = "Noise standard deviation (σ)" if self.use_noise else "Experiment"
         
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5), constrained_layout=True)
+        fig, axes = plt.subplots(
+            1, 2, figsize=(DOUBLE_COLUMN_WIDTH, 3.2), constrained_layout=True,
+        )
         
         for ax, values, ylabel, panel in zip(
             axes,
             (acc_improvement, auc_improvement),
             (f"Δ accuracy ({m1} − {m2})", f"Δ AUC ({m1} − {m2})"),
-            ("(A) Relative accuracy", "(B) Relative AUC"),
+            ("(a) Relative accuracy", "(b) Relative AUC"),
         ):
-            style_axes(ax)
+            style_axis(ax, grid=True)
             colors = [POSITIVE_BAR if v > 0 else NEGATIVE_BAR for v in values]
             bars = ax.bar(
                 range(len(x)), values, color=colors, alpha=0.85,
@@ -777,7 +792,7 @@ class Evaluator:
             ax.set_xticklabels([f"{v:.2f}" for v in x])
             ax.set_xlabel(x_label)
             ax.set_ylabel(ylabel)
-            ax.set_title(panel, loc="left", fontsize=12, fontweight="600", pad=10)
+            panel_label(ax, panel)
             ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v:+.3f}"))
 
             ymax = max(abs(values)) if len(values) else 0.01
@@ -789,14 +804,11 @@ class Evaluator:
                     height + offset if val >= 0 else height - offset,
                     f"{val:+.3f}", ha="center",
                     va="bottom" if val >= 0 else "top",
-                    fontsize=8, color=TICK_COLOR,
+                    fontsize=8.5, color=TICK_COLOR,
                 )
 
-        fig.suptitle(f"Relative performance: {m1} vs. {m2} (mean over runs)",
-                     fontsize=14, fontweight="bold", y=1.03)
-        
         if save_path:
-            paths = save_figure(fig, save_path)
+            paths = save_paper_figure(fig, save_path)
             print(f"Saved relative performance: {', '.join(paths)}")
         plt.show()
 
