@@ -243,7 +243,8 @@ class Evaluator:
                            noise_std: float, 
                            run_id: int,
                            run_seed: int = 42,
-                           fold_index: Optional[int] = None) -> Tuple[float, float, float, float, float, float, Any]:
+                           fold_index: Optional[int] = None,
+                           training_config: Optional[Dict] = None) -> Tuple[float, float, float, float, float, float, Any]:
         """
         Train and evaluate a single model with given noise level
         Returns: (train_acc, test_acc, train_auc, test_auc, linguistic_richness, relaxation_rate, trained_wrapper)
@@ -277,7 +278,19 @@ class Evaluator:
             gate -> can be non-zero, learned from data.
         Like linguistic_richness, np.nan is reserved for "not applicable"
         or "failed run", never used to mean "exactly zero relaxation".
+
+        Optional per-model ``training_config`` (defaults preserve legacy
+        behaviour for GIFTSHIFTER / ANFIS / etc.)::
+
+            loss_mode: "default" | "paper_mse"
+            uses_reconstruction: True
+            scheduler: "onecycle" | "none"
         """
+        training_config = dict(training_config or {})
+        loss_mode = training_config.get("loss_mode", "default")
+        uses_reconstruction = training_config.get("uses_reconstruction", True)
+        scheduler_name = training_config.get("scheduler", "onecycle")
+
         self._refresh_split(session_id=run_seed, fold_index=fold_index)
 
         # Feature count can change across resplits when PyCaret fits encoders on
@@ -323,37 +336,47 @@ class Evaluator:
         optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_params['lr'])
         steps_per_epoch = len(train_loader)
         
-        scheduler = OneCycleLR(
-            optimizer,
-            max_lr=self.learning_params['max_lr'],
-            steps_per_epoch=steps_per_epoch,
-            epochs=self.learning_params['epochs']
-        )
+        if scheduler_name == "none":
+            scheduler = None
+        else:
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=self.learning_params['max_lr'],
+                steps_per_epoch=steps_per_epoch,
+                epochs=self.learning_params['epochs']
+            )
         
         # Loss functions
         cos = torch.nn.L1Loss()
-        
-        # Define criterion that handles both model types
-        if self.binary:
-            cross = torch.nn.BCEWithLogitsLoss()
-            def criterion(batch_X, batch_y, outputs, reconstructed, alpha, entropy_penalty=None):
-                main_loss = cross(outputs.squeeze(), batch_y.squeeze())
-                recon_loss = cos(reconstructed, batch_X) * alpha
-                if entropy_penalty is not None and has_entropy_reg:
-                    # entropy_penalty is a [B, R] tensor — reduce to scalar before scaling
-                    entropy_loss = entropy_penalty.mean() * entropy_coef
-                    return main_loss + recon_loss + entropy_loss
-                return main_loss + recon_loss
-        else:
-            cross = torch.nn.CrossEntropyLoss()
-            def criterion(batch_X, batch_y, outputs, reconstructed, alpha, entropy_penalty=None):
-                main_loss = cross(outputs, batch_y.long())
-                recon_loss = cos(reconstructed, batch_X) * alpha
-                if entropy_penalty is not None and has_entropy_reg:
-                    # entropy_penalty is a [B, R] tensor — reduce to scalar before scaling
-                    entropy_loss = entropy_penalty.mean() * entropy_coef
-                    return main_loss + recon_loss + entropy_loss
-                return main_loss + recon_loss
+        bce = torch.nn.BCEWithLogitsLoss()
+        ce = torch.nn.CrossEntropyLoss()
+
+        def compute_task_loss(outputs, targets):
+            """Shared task loss for train / val / early stopping."""
+            if loss_mode == "paper_mse":
+                # Paper eq. (9). Convert integer labels to one-hot safely
+                # even when the global y dtype is float32 (binary mode).
+                n_out = outputs.shape[-1]
+                if n_out == 1:
+                    tgt = targets.reshape(-1, 1).to(dtype=outputs.dtype)
+                else:
+                    tgt_idx = targets.long().reshape(-1)
+                    tgt = torch.nn.functional.one_hot(
+                        tgt_idx, num_classes=n_out
+                    ).to(dtype=outputs.dtype)
+                return 0.5 * ((outputs - tgt) ** 2).sum(dim=-1).mean()
+            if self.binary:
+                return bce(outputs.squeeze(), targets.squeeze())
+            return ce(outputs, targets.long())
+
+        def criterion(batch_X, batch_y, outputs, reconstructed, alpha, entropy_penalty=None):
+            main_loss = compute_task_loss(outputs, batch_y)
+            total = main_loss
+            if uses_reconstruction:
+                total = total + cos(reconstructed, batch_X) * alpha
+            if entropy_penalty is not None and has_entropy_reg:
+                total = total + entropy_penalty.mean() * entropy_coef
+            return total
         
         # Alpha decay
         # FIX Bug 3: guard against min_alpha=0 which makes power(0/alpha) collapse to 0 instantly
@@ -362,10 +385,10 @@ class Evaluator:
         safe_min_alpha = max(min_alpha, 1e-6)
         decay_epochs = max(self.learning_params['epochs'] / 2, 1)
         
-        if alpha > 0:
+        if uses_reconstruction and alpha > 0:
             alpha_decaying = np.power(safe_min_alpha / alpha, 1.0 / (steps_per_epoch * decay_epochs))
         else:
-            alpha_decaying = 0.95
+            alpha_decaying = 1.0  # no decay when reconstruction is unused
         
         # Training loop — early stopping only when a validation split exists and
         # use_early_stopping is not explicitly disabled (default: auto).
@@ -400,12 +423,11 @@ class Evaluator:
                 loss.backward()
                 optimizer.step()
                 
-                try:
+                if scheduler is not None:
                     scheduler.step()
-                except ValueError:
-                    pass
             
-            alpha = max(safe_min_alpha, alpha * alpha_decaying)
+            if uses_reconstruction:
+                alpha = max(safe_min_alpha, alpha * alpha_decaying)
 
             if early_stopping is not None:
                 model.eval()
@@ -419,10 +441,7 @@ class Evaluator:
                 with torch.no_grad():
                     val_outputs = model(val_tensor_x)
                     val_preds = val_outputs[0]
-                    if self.binary:
-                        val_loss = cross(val_preds.squeeze(), val_tensor_y.squeeze())
-                    else:
-                        val_loss = cross(val_preds, val_tensor_y.long())
+                    val_loss = compute_task_loss(val_preds, val_tensor_y)
 
                 early_stopping(val_loss.item(), model)
                 if early_stopping.early_stop:
@@ -597,6 +616,7 @@ class Evaluator:
                         run,
                         run_seed,
                         fold_index=fold_index,
+                        training_config=config.get('training'),
                     )
 
                     # Cache the most recently trained wrapper for this model
