@@ -37,6 +37,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.exceptions import NotFittedError
 from sklearn.metrics import accuracy_score
 from sklearn.neighbors import NearestNeighbors
 from torch import Tensor, nn
@@ -132,6 +133,7 @@ class UNFIS(nn.Module):
         self.uses_reconstruction_loss = False
         self.uses_reconstruction = False
         self.uses_unfis_gqlm = True
+        self.uses_unfis_protocol = True
         self.training_mode = "knn_initialization_gqlm"
         self.implementation_status = (
             "paper_aligned_independent_reimplementation_"
@@ -196,8 +198,8 @@ class UNFIS(nn.Module):
 
     @property
     def spreads(self) -> Tensor:
-        """σ = softplus(raw) + sigma_min (strictly positive)."""
-        return F.softplus(self.raw_spreads) + self.sigma_min
+        """σ = softplus(raw).clamp_min(sigma_min) (strictly positive)."""
+        return F.softplus(self.raw_spreads).clamp_min(self.sigma_min)
 
     @property
     def std(self) -> Tensor:
@@ -310,12 +312,17 @@ class UNFIS(nn.Module):
         with torch.no_grad():
             return self.selection_strengths().detach()
 
-    def active_feature_counts(self, threshold: float = 0.5) -> Tensor:
-        """Reporting only: count features with ζ ≥ threshold, shape [R]."""
+    def active_feature_counts(self, threshold: Optional[float] = None) -> Tensor:
+        """Per-rule active-feature measure, shape [R].
+
+        Default (paper-style): ``zeta.sum(dim=features)`` soft count in [0, D].
+        If ``threshold`` is set, hard-count features with ζ ≥ threshold (reporting).
+        """
         with torch.no_grad():
-            return (self.selection_strengths() >= float(threshold)).sum(dim=1).to(
-                dtype=torch.float64
-            )
+            zeta = self.selection_strengths()
+            if threshold is None:
+                return zeta.sum(dim=1).to(dtype=torch.float64)
+            return (zeta >= float(threshold)).sum(dim=1).to(dtype=torch.float64)
 
     # ------------------------------------------------------------------
     # Parameter packing (GqLM)
@@ -374,6 +381,12 @@ class UNFIS(nn.Module):
             self.selection_epsilon = float(state["selection_epsilon"])
         if "sigma_min" in state:
             self.sigma_min = float(state["sigma_min"])
+        if "binary" in state:
+            self.binary = bool(state["binary"])
+        if "implementation_status" in state:
+            self.implementation_status = state["implementation_status"]
+        if "training_mode" in state:
+            self.training_mode = state["training_mode"]
 
     def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
         state_dict = dict(state_dict)
@@ -401,8 +414,7 @@ class UNFIS(nn.Module):
                 if old.ndim == 2 and old.shape == (self.in_features, self.rules_count):
                     old = old.T.contiguous()
                 sigma = old.abs().clamp_min(self.sigma_min)
-                target = (sigma - self.sigma_min).clamp_min(1e-6)
-                state_dict["raw_spreads"] = torch.log(torch.expm1(target))
+                state_dict["raw_spreads"] = torch.log(torch.expm1(sigma))
                 warnings.warn(
                     "Converted legacy UNFIS 'std' to softplus 'raw_spreads'.",
                     RuntimeWarning,
@@ -564,7 +576,7 @@ def knn_initialize_unfis(
     kw = {"device": model.centers.device, "dtype": model.centers.dtype}
     with torch.no_grad():
         model.centers.copy_(torch.as_tensor(centers, **kw))
-        raw = np.log(np.expm1(np.maximum(sigmas - model.sigma_min, 1e-6)))
+        raw = np.log(np.expm1(np.maximum(sigmas, 1e-6)))
         model.raw_spreads.copy_(torch.as_tensor(raw, **kw))
         model.consequent_bias.copy_(torch.as_tensor(biases, **kw))
         model.consequent_weights.copy_(torch.as_tensor(slopes, **kw))
@@ -1129,29 +1141,36 @@ class SklearnUNFISWrapper(BaseEstimator, ClassifierMixin):
                 self.model.train()
         return torch.cat(chunks, dim=0)
 
+    def _check_fitted(self):
+        if not bool(getattr(self, "is_fitted_", False)) or getattr(
+            self.model, "_classes", None
+        ) is None:
+            raise NotFittedError(
+                "This SklearnUNFISWrapper instance is not fitted yet. "
+                "Call fit() before predict()."
+            )
+
     def decision_function(self, X):
+        self._check_fitted()
         return self._forward_scores(X).numpy()
 
     def predict_proba(self, X):
+        self._check_fitted()
         scores = self._forward_scores(X)
         if scores.shape[0] == 0:
             return np.empty((0, self.model.out_features), dtype=np.float32)
-        proba = torch.softmax(scores, dim=1).numpy()
-        return proba
+        return torch.softmax(scores, dim=1).numpy()
 
     def predict(self, X):
+        self._check_fitted()
         scores = self._forward_scores(X)
-        classes = getattr(self.model, "_classes", None)
+        classes = np.asarray(self.model._classes)
         if scores.shape[0] == 0:
-            if classes is not None:
-                return np.empty((0,), dtype=np.asarray(classes).dtype)
-            return np.empty((0,), dtype=np.int64)
-        idx = scores.argmax(dim=1).numpy()
-        if classes is None:
-            return idx
-        return np.asarray(classes)[idx]
+            return np.empty((0,), dtype=classes.dtype)
+        return classes[scores.argmax(dim=1).numpy()]
 
     def score(self, X, y):
+        self._check_fitted()
         return accuracy_score(np.asarray(y).reshape(-1), self.predict(X))
 
     def get_params(self, deep=True):
@@ -1161,6 +1180,16 @@ class SklearnUNFISWrapper(BaseEstimator, ClassifierMixin):
             "dtype": self.dtype,
             "batch_size": self.batch_size,
         }
+
+    def _sync_fitted_from_model(self) -> None:
+        if getattr(self.model, "is_fitted_", False) and getattr(
+            self.model, "_classes", None
+        ) is not None:
+            self.classes_ = np.asarray(self.model._classes)
+            self.is_fitted_ = True
+        else:
+            self.classes_ = None
+            self.is_fitted_ = False
 
     def set_params(self, **parameters):
         for key, value in parameters.items():
@@ -1172,6 +1201,7 @@ class SklearnUNFISWrapper(BaseEstimator, ClassifierMixin):
                     raise ValueError(f"batch_size must be >= 1, got {value}")
             setattr(self, key, value)
         self.model = self.model.to(device=self.device, dtype=self.dtype)
+        self._sync_fitted_from_model()
         return self
 
 

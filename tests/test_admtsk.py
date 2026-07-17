@@ -110,7 +110,7 @@ def test_cgmf_at_center_is_one():
 
 
 def test_cgmf_lower_bound():
-    model = ADMTSK(3, rules=3, out_features=1, binary=True)
+    model = ADMTSK(3, rules=3, out_features=2, binary=True)
     x = torch.full((2, 3), 1e6)  # far from all centers in [0, 1]
     mu = model.membership(x)
     lo = 1.0 / math.e
@@ -175,16 +175,18 @@ def test_parameter_initialization():
 
 @pytest.mark.parametrize(
     "out_features,binary",
-    [(1, True), (2, True), (4, False)],
+    [(2, True), (4, False)],
 )
 def test_forward_shapes(out_features, binary):
     D, B = 5, 9
     model = ADMTSK(D, rules=3, out_features=out_features, binary=binary)
     x = torch.rand(B, D)
     logits, xd = model(x)
-    assert logits.shape == (B, out_features)
+    expected_out = 2 if binary else out_features
+    assert logits.shape == (B, expected_out)
     assert xd.shape == x.shape
     assert not model.uses_reconstruction
+    assert model.out_features == expected_out
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +249,8 @@ def test_wrapper_predict_proba():
     model = ADMTSK(5, rules=3, out_features=2, binary=True)
     wrap = SklearnADMTSKWrapper(model, batch_size=3)
     X = np.random.RandomState(0).rand(11, 5).astype(np.float32)
+    y = (X[:, 0] > 0.5).astype(np.int64)
+    wrap.fit(X, y, epochs=2, batch_fraction=0.5, learning_rate=0.01, random_state=0)
     proba = wrap.predict_proba(X)
     assert proba.shape == (11, 2)
     assert np.isfinite(proba).all()
@@ -254,12 +258,94 @@ def test_wrapper_predict_proba():
     assert np.allclose(proba.sum(axis=1), 1.0, atol=1e-5)
     pred = wrap.predict(X)
     assert pred.shape == (11,)
+    assert set(np.unique(pred)).issubset(set(np.unique(y)))
 
-    model1 = ADMTSK(5, rules=3, out_features=1, binary=True)
-    wrap1 = SklearnADMTSKWrapper(model1)
-    proba1 = wrap1.predict_proba(X)
-    assert proba1.shape == (11, 2)
-    assert np.allclose(proba1.sum(axis=1), 1.0, atol=1e-5)
+
+def test_wrapper_not_fitted_raises():
+    from sklearn.exceptions import NotFittedError
+
+    wrap = SklearnADMTSKWrapper(ADMTSK(4, rules=3, out_features=2, binary=True))
+    X = np.random.rand(5, 4).astype(np.float32)
+    with pytest.raises(NotFittedError):
+        wrap.predict(X)
+    with pytest.raises(NotFittedError):
+        wrap.predict_proba(X)
+
+
+def test_admtsk_protocol_flags():
+    m = ADMTSK(4, rules=3, out_features=2, binary=True, paper_mode=True)
+    assert m.uses_custom_fit is True
+    assert m.supports_backprop_training is True
+    assert m.uses_generic_optimizer is False
+    assert m.uses_reconstruction_loss is False
+    assert m.uses_admtsk_paper_training is True
+    assert m.training_mode == "admtsk_fixed_adam_mse"
+    assert m.required_input_scaling == "minmax_0_1"
+    assert m.out_features == 2
+
+
+def test_paper_mode_epochs_must_be_50():
+    m = ADMTSK(4, rules=3, out_features=2, binary=True, paper_mode=True)
+    X = np.random.rand(20, 4).astype(np.float32)
+    y = (X[:, 0] > 0.5).astype(np.int64)
+    with pytest.raises(ValueError, match="epochs"):
+        train_admtsk_model(m, X, y, epochs=2, batch_fraction=0.2)
+
+
+def test_evaluator_uses_admtsk_custom_fit_not_generic_adam():
+    from unittest import mock
+
+    experiment = _TinyExperiment(n_samples=30, n_features=4, seed=1)
+    configs = {
+        "ADMTSK": {
+            "model_class": ADMTSK,
+            "wrapper_class": SklearnADMTSKWrapper,
+            "params": {"rules": 3, "out_features": 2, "binary": True},
+            "training": {
+                "trainer": "custom_fit",
+                "fit_method": "admtsk_paper_fit",
+                "uses_reconstruction": False,
+                "scheduler": "none",
+                "fit_params": {
+                    "learning_rate": 0.01,
+                    "batch_fraction": 0.25,
+                    "epochs": 2,
+                },
+            },
+        }
+    }
+    learning_params = {
+        "batch_size": 8,
+        "lr": 0.01,
+        "max_lr": 0.01,
+        "epochs": 2,
+        "alpha": 0.0,
+        "min_alpha": 0.0,
+    }
+
+    with mock.patch(
+        "model.admtsk.train_admtsk_model", wraps=train_admtsk_model
+    ) as spy_train:
+        with mock.patch("tests.evaluate.OneCycleLR") as oc:
+            oc.side_effect = AssertionError(
+                "OneCycleLR must not run for ADMTSK custom_fit"
+            )
+            ev = Evaluator(
+                experiment=experiment,
+                model_configs=configs,
+                learning_params=learning_params,
+                device=torch.device("cpu"),
+                binary=True,
+                noise_levels=[0.0],
+                n_runs=1,
+                random_state=2,
+                use_noise=False,
+                use_early_stopping=False,
+            )
+            results = ev.evaluate(verbose=False)
+    assert spy_train.called
+    assert len(results) == 1
+    assert isinstance(ev._last_wrapper["ADMTSK"], SklearnADMTSKWrapper)
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +366,15 @@ def test_no_reconstruction_loss_for_admtsk():
                 "validate_input_range": False,
             },
             "training": {
-                "loss_mode": "paper_mse",
+                "trainer": "custom_fit",
+                "fit_method": "admtsk_paper_fit",
                 "uses_reconstruction": False,
                 "scheduler": "none",
+                "fit_params": {
+                    "learning_rate": 0.01,
+                    "batch_fraction": 0.2,
+                    "epochs": 2,
+                },
             },
         }
     }
@@ -473,6 +565,8 @@ def test_wrapper_inference_is_genuinely_batched():
     model = _admtsk(D=5, out_features=2)
     wrap = SklearnADMTSKWrapper(model, batch_size=3)
     X = np.random.RandomState(0).rand(11, 5).astype(np.float32)
+    y = (X[:, 0] > 0.5).astype(np.int64)
+    wrap.fit(X, y, epochs=2, batch_fraction=0.5, learning_rate=0.01, random_state=0)
     seen = []
 
     def _hook(_module, inputs, _output):
@@ -505,6 +599,9 @@ def test_wrapper_inference_is_genuinely_batched():
 def test_wrapper_empty_input():
     model = _admtsk(D=5, out_features=2)
     wrap = SklearnADMTSKWrapper(model, batch_size=3)
+    X = np.random.RandomState(0).rand(8, 5).astype(np.float32)
+    y = (X[:, 0] > 0.5).astype(np.int64)
+    wrap.fit(X, y, epochs=1, batch_fraction=0.5, learning_rate=0.01, random_state=0)
     X_empty = np.empty((0, 5), dtype=np.float32)
     proba = wrap.predict_proba(X_empty)
     pred = wrap.predict(X_empty)
@@ -536,7 +633,7 @@ def test_train_admtsk_model_cpu_dataloader():
         y,
         learning_rate=0.01,
         batch_fraction=0.25,
-        epochs=3,
+        epochs=50,  # paper_mode requires 50
         random_state=0,
         device="cpu",
     )

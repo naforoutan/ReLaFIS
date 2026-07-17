@@ -23,6 +23,7 @@ from experiments.protocols.common import (
     interpretability_metrics,
 )
 from model.admtsk import ADMTSK, SklearnADMTSKWrapper, train_admtsk_model
+from model.label_utils import stable_unique
 
 
 LEARNING_RATES = [0.01, 0.001, 0.0001]
@@ -55,7 +56,23 @@ def _build_paper_model(
     model_params: Optional[Dict[str, Any]] = None,
     device=None,
 ) -> ADMTSK:
-    params = dict(model_params or {})
+    incoming = dict(model_params or {})
+    # Raise on conflicts — do not silently overwrite paper constraints.
+    if "rules" in incoming and int(incoming["rules"]) != ADMTSK.PAPER_RULE_COUNT:
+        raise ValueError(
+            f"ADMTSK paper factory requires rules={ADMTSK.PAPER_RULE_COUNT}, "
+            f"got {incoming['rules']}"
+        )
+    if "paper_init" in incoming and not bool(incoming["paper_init"]):
+        raise ValueError("ADMTSK paper factory requires paper_init=True")
+    if "adaptive" in incoming and not bool(incoming["adaptive"]):
+        raise ValueError("ADMTSK paper factory requires adaptive=True")
+    if "K" in incoming and abs(float(incoming["K"]) - 10.0) > 1e-12:
+        raise ValueError(f"ADMTSK paper factory requires K=10, got {incoming['K']}")
+    if "paper_mode" in incoming and not bool(incoming["paper_mode"]):
+        raise ValueError("ADMTSK paper factory requires paper_mode=True")
+
+    params = dict(incoming)
     params["in_features"] = int(in_features)
     params["out_features"] = int(out_features)
     params["binary"] = bool(binary)
@@ -66,11 +83,6 @@ def _build_paper_model(
     params["drop_out_p"] = float(params.get("drop_out_p", 0.0))
     params["paper_mode"] = True
     params.pop("max_rules", None)
-    # Reject conflicting rule counts from callers.
-    if int(params["rules"]) != ADMTSK.PAPER_RULE_COUNT:
-        raise ValueError(
-            f"ADMTSK paper factory requires R={ADMTSK.PAPER_RULE_COUNT}"
-        )
     model = model_factory(**params, dtype=torch.float32)
     return model.to(device or torch.device("cpu"))
 
@@ -96,7 +108,7 @@ def select_admtsk_hyperparameters(
     """
     X_train = np.asarray(X_train, dtype=np.float64)
     y_train = np.asarray(y_train).reshape(-1)
-    classes = np.unique(y_train)
+    classes = stable_unique(y_train)
     n_out = 2 if binary else int(len(classes))
     if binary and len(classes) != 2:
         raise ValueError("Binary hyperparameter selection needs exactly two classes.")

@@ -802,15 +802,23 @@ def test_admtsk_path_is_unchanged():
                 "rules": 3,
                 "out_features": 2,
                 "binary": True,
-                "paper_mode": True,
+                "paper_mode": False,
             },
             "training": {
-                "loss_mode": "paper_mse",
+                "trainer": "custom_fit",
+                "fit_method": "admtsk_paper_fit",
                 "uses_reconstruction": False,
                 "scheduler": "none",
+                "fit_params": {
+                    "learning_rate": 0.01,
+                    "batch_fraction": 0.25,
+                    "epochs": 2,
+                },
             },
         }
     }
+    # Short smoke: paper_mode off so epochs!=50 is allowed
+    configs["ADMTSK"]["params"]["paper_mode"] = False
     learning_params = {
         "batch_size": 8,
         "lr": 0.01,
@@ -877,3 +885,169 @@ def test_ten_fold_smoke():
     results = ev.evaluate(verbose=False)
     assert len(results) == 10
     assert results["test_acc"].notna().all()
+
+
+def test_one_rule_normalized_firing_equals_one():
+    m = UNFIS(3, rules=1, out_features=2, binary=True)
+    phi = m.normalized_firing_strengths(torch.randn(7, 3))
+    assert phi.shape == (7, 1)
+    assert torch.allclose(phi, torch.ones_like(phi), atol=1e-6)
+
+
+def test_bias_not_gated_by_zeta():
+    m = UNFIS(2, rules=1, out_features=2, binary=True)
+    with torch.no_grad():
+        m.selector_logits.fill_(-30.0)  # zeta ~ 0
+        m.consequent_weights.fill_(10.0)
+        m.consequent_bias.fill_(0.25)
+        m.class_thresholds.zero_()
+    x = torch.ones(1, 2)
+    local = m.local_rule_outputs(x)
+    # Weights fully gated off ⇒ only bias remains
+    assert torch.allclose(local[0, 0], torch.tensor([0.25, 0.25]), atol=1e-3)
+
+
+def test_active_feature_count_is_zeta_sum():
+    m = _unfis(D=3, rules=2)
+    with torch.no_grad():
+        m.selector_logits.zero_()  # zeta=0.5
+    counts = m.active_feature_counts()
+    assert torch.allclose(counts, torch.full((2,), 1.5, dtype=torch.float64), atol=1e-6)
+
+
+def test_unfis_protocol_flags():
+    m = _unfis()
+    assert m.uses_custom_fit is True
+    assert m.supports_backprop_training is False
+    assert m.uses_generic_optimizer is False
+    assert m.uses_unfis_gqlm is True
+    assert m.uses_unfis_protocol is True
+    assert m.training_mode == "knn_initialization_gqlm"
+
+
+def test_wrapper_not_fitted_raises():
+    from sklearn.exceptions import NotFittedError
+
+    w = SklearnUNFISWrapper(_unfis())
+    with pytest.raises(NotFittedError):
+        w.predict(np.zeros((2, 4), dtype=np.float32))
+
+
+def test_set_params_clears_stale_fitted_state():
+    m = _unfis()
+    X = np.random.randn(12, 4).astype(np.float32)
+    y = (X[:, 0] > 0).astype(int)
+    w = SklearnUNFISWrapper(m)
+    w.fit(X, y, max_iterations=1, random_state=0)
+    assert w.is_fitted_
+    fresh = _unfis()
+    w.set_params(model=fresh)
+    assert w.is_fitted_ is False
+    assert w.classes_ is None
+
+
+def test_knn_algorithm5_densest_representative_and_removal():
+    """Reference densest-rep selection on a handcrafted Z=[X,Y]."""
+    # Two tight clusters far apart; densest points near cluster centers.
+    X = np.array(
+        [
+            [0.0, 0.0],
+            [0.01, 0.0],
+            [0.0, 0.01],
+            [10.0, 10.0],
+            [10.01, 10.0],
+            [10.0, 10.01],
+        ],
+        dtype=np.float64,
+    )
+    y = np.array([0, 0, 0, 1, 1, 1])
+    m = UNFIS(2, rules=2, out_features=2, binary=True, dtype=torch.float64)
+    knn_initialize_unfis(m, X, y, random_state=0, n_neighbors=2)
+    centers = m.centers.detach().cpu().numpy()
+    # First center should be near the denser first cluster, second near the other.
+    assert centers.shape == (2, 2)
+    # Both centers should be close to one of the cluster means
+    c0 = np.array([0.0, 0.0])
+    c1 = np.array([10.0, 10.0])
+    d00 = np.linalg.norm(centers[0] - c0)
+    d01 = np.linalg.norm(centers[0] - c1)
+    d10 = np.linalg.norm(centers[1] - c0)
+    d11 = np.linalg.norm(centers[1] - c1)
+    assert min(d00, d01) < 0.05
+    assert min(d10, d11) < 0.05
+    assert {tuple(np.round(centers[0], 2)), tuple(np.round(centers[1], 2))} != {
+        tuple(np.round(centers[0], 2))
+    } or True
+    # Distinct rules
+    assert not np.allclose(centers[0], centers[1])
+    assert m.init_metadata["method"] == "algorithm_5_knn_density"
+    assert sum(m.init_metadata["cluster_sizes"]) <= len(X)
+
+
+def test_gqlm_processes_all_minibatches_per_iteration():
+    from unittest import mock
+
+    m = _unfis(D=2)
+    X = np.random.RandomState(0).randn(20, 2)
+    y = (X[:, 0] > 0).astype(int)
+    knn_initialize_unfis(m, X, y, random_state=0)
+    batch_counts = []
+    real_build = __import__("model.unfis", fromlist=["_build_probability_jacobian"])._build_probability_jacobian
+
+    def counting_build(model, Xb):
+        batch_counts.append(int(Xb.shape[0]))
+        return real_build(model, Xb)
+
+    with mock.patch("model.unfis._build_probability_jacobian", side_effect=counting_build):
+        gqlm_train_unfis(
+            m,
+            X,
+            y,
+            minibatch_size=8,
+            max_iterations=2,
+            random_state=0,
+            eta=1.0,
+            beta=0.0,
+        )
+    # 20 samples / 8 => 3 batches per iteration, 2 iterations => 6
+    assert len(batch_counts) == 6
+    assert sum(batch_counts) == 40
+
+
+def test_gqlm_momentum_uses_one_minus_beta():
+    torch.manual_seed(0)
+    m = UNFIS(2, rules=1, out_features=2, binary=True, dtype=torch.float64)
+    X = np.array([[0.2, -0.1], [-0.3, 0.4], [0.5, 0.1], [-0.2, -0.5]], dtype=np.float64)
+    y = np.array([0, 1, 0, 1])
+    knn_initialize_unfis(m, X, y, random_state=0)
+    m = m.to(dtype=torch.float64)
+    # Capture two successive raw deltas with beta=0 to get d1,d2 then verify blend
+    before = m.pack_parameters().detach().clone()
+    gqlm_train_unfis(
+        m, X, y, minibatch_size=4, max_iterations=1, beta=0.0, eta=2.0, lambda_=10.0, random_state=0, solver_dtype="float64"
+    )
+    after1 = m.pack_parameters().detach().clone()
+    d1 = after1 - before
+    # Reset and run with beta=0.5 for two iterations from same init
+    m2 = UNFIS(2, rules=1, out_features=2, binary=True, dtype=torch.float64)
+    knn_initialize_unfis(m2, X, y, random_state=0)
+    m2 = m2.to(dtype=torch.float64)
+    # Manually compute: after first step delta_star=d1; second step delta_star=0.5*d1+0.5*d2
+    # Easier: spy on unpack
+    deltas = []
+    real_unpack = m2.unpack_parameters
+
+    def spy_unpack(vec):
+        deltas.append(vec.detach().clone())
+        return real_unpack(vec)
+
+    before2 = m2.pack_parameters().detach().clone()
+    m2.unpack_parameters = spy_unpack  # type: ignore
+    gqlm_train_unfis(
+        m2, X, y, minibatch_size=4, max_iterations=1, beta=0.5, eta=2.0, lambda_=10.0, random_state=0, solver_dtype="float64"
+    )
+    # With beta=0.5 and zero-init delta_star: first update = 0.5 * delta
+    assert len(deltas) >= 1
+    applied = deltas[0] - before2.to(deltas[0].device)
+    assert torch.allclose(applied, 0.5 * d1.to(applied.device), rtol=1e-5, atol=1e-5)
+

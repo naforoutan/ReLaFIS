@@ -26,6 +26,8 @@ import torch.nn.functional as F
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score
 from torch import Tensor, nn
+from sklearn.exceptions import NotFittedError
+from model.label_utils import label_key, stable_unique
 from torch.utils.data import DataLoader, TensorDataset
 
 
@@ -113,7 +115,7 @@ class ADMTSK(nn.Module):
         self,
         in_features: int,
         rules: int = 3,
-        out_features: int = 1,
+        out_features: int = 2,
         binary: bool = True,
         K: float = 10.0,
         membership_lower_bound: float = 1.0 / math.e,
@@ -197,8 +199,15 @@ class ADMTSK(nn.Module):
 
         self.in_features = in_features
         self.rules_count = rules
-        self.out_features = out_features
         self.binary = bool(binary)
+        if self.binary:
+            if out_features not in (1, 2):
+                raise ValueError(
+                    "Binary ADMTSK requires out_features in {1, 2} "
+                    f"(resolved to 2); got {out_features}."
+                )
+            out_features = 2
+        self.out_features = out_features
         self.K = K
         self.membership_lower_bound = membership_lower_bound
         self.min_spread = min_spread
@@ -212,8 +221,16 @@ class ADMTSK(nn.Module):
         self.adaptive = adaptive
         self.paper_init = bool(paper_init)
         self.paper_mode = bool(paper_mode)
+
+        self.uses_custom_fit = True
+        self.supports_backprop_training = True
+        self.uses_generic_optimizer = False
         self.uses_reconstruction = False
         self.uses_reconstruction_loss = False
+        self.uses_admtsk_paper_training = True
+        self.training_mode = "admtsk_fixed_adam_mse"
+        self.required_input_scaling = "minmax_0_1"
+        self.implementation_status = "paper_aligned_independent_reimplementation"
 
         # ---- Antecedents: centers [R, D], raw spreads [R, D] ----
         # Paper eq. (33), one-based: m_(r,d) = (r-1)/(R-1).
@@ -224,16 +241,14 @@ class ADMTSK(nn.Module):
             else:
                 grid = torch.arange(rules, **factory_kwargs) / float(rules - 1)
                 centers = grid.view(rules, 1).expand(rules, in_features).contiguous()
-            # σ = softplus(raw) + min_spread ≈ 1 at init
-            raw_target = max(1.0 - min_spread, 1e-6)
-            raw_init = _inv_softplus(raw_target)
+            # σ = softplus(raw).clamp_min(sigma_min); init softplus(raw)=1
+            raw_init = _inv_softplus(1.0)
             raw_spreads = torch.full(
                 (rules, in_features), raw_init, **factory_kwargs
             )
         else:
             centers = torch.rand((rules, in_features), **factory_kwargs)
-            raw_target = max(1.0 - min_spread, 1e-6)
-            raw_init = _inv_softplus(raw_target)
+            raw_init = _inv_softplus(1.0)
             raw_spreads = torch.full(
                 (rules, in_features), raw_init, **factory_kwargs
             ) + 0.1 * torch.randn(rules, in_features, **factory_kwargs)
@@ -303,16 +318,19 @@ class ADMTSK(nn.Module):
 
     @property
     def spreads(self) -> Tensor:
-        """Effective positive spreads σ = softplus(raw) + min_spread.
+        """Effective positive spreads σ = softplus(raw).clamp_min(sigma_min).
 
-        Spreads stay strictly positive without post-hoc clamping of a
-        directly learnable σ after optimizer steps.
+        Optimize raw_spreads; softplus keeps σ > 0. clamp_min enforces sigma_min.
         """
-        return F.softplus(self.raw_spreads) + self.min_spread
+        return F.softplus(self.raw_spreads).clamp_min(self.min_spread)
 
     @property
     def std(self) -> Tensor:
         return self.spreads
+
+    @property
+    def sigma_min(self) -> float:
+        return self.min_spread
 
     # ------------------------------------------------------------------
     # Input checks
@@ -623,8 +641,8 @@ class ADMTSK(nn.Module):
                 if old_std.shape == (self.in_features, self.rules_count):
                     old_std = old_std.T.contiguous()
                 old_sigma = old_std.abs().clamp_min(self.min_spread)
-                target = (old_sigma - self.min_spread).clamp_min(1e-6)
-                state_dict["raw_spreads"] = torch.log(torch.expm1(target))
+                # Inv-softplus of σ for σ = softplus(raw).clamp_min(sigma_min).
+                state_dict["raw_spreads"] = torch.log(torch.expm1(old_sigma))
                 warnings.warn(
                     "Converted legacy ADMTSK 'std' to softplus 'raw_spreads'.",
                     RuntimeWarning,
@@ -702,30 +720,43 @@ def train_admtsk_model(
     if epochs < 1:
         raise ValueError(f"epochs must be >= 1, got {epochs}")
 
+    if getattr(model, "paper_mode", False) and epochs != int(ADMTSK.PAPER_EPOCH_COUNT):
+        raise ValueError(
+            f"paper_mode requires epochs == {ADMTSK.PAPER_EPOCH_COUNT}, got {epochs}"
+        )
+
     X_np, y_np = _to_numpy_xy(X_train, y_train)
     if X_np.shape[1] != model.in_features:
         raise ValueError(
             f"X has {X_np.shape[1]} features, model expects {model.in_features}"
         )
+    if not np.isfinite(X_np).all():
+        raise ValueError("X_train contains NaN or Inf.")
+    if y_np.size != X_np.shape[0]:
+        raise ValueError("X/y length mismatch.")
 
-    classes = np.unique(y_np)
-    if model.out_features == 1:
-        # Single-logit compatibility: encode positive class as 1.0 target.
-        if len(classes) != 2:
-            raise ValueError("out_features=1 requires binary labels.")
-        encoded = (y_np == classes[1]).astype(np.float64)
-        y_target = torch.as_tensor(encoded, dtype=torch.float32).unsqueeze(1)
-    else:
-        if len(classes) != model.out_features:
-            raise ValueError(
-                f"out_features={model.out_features} but training has "
-                f"{len(classes)} classes."
-            )
-        class_to_index = {label: i for i, label in enumerate(classes.tolist())}
-        encoded = np.asarray([class_to_index[v] for v in y_np], dtype=np.int64)
-        y_target = F.one_hot(
-            torch.as_tensor(encoded), num_classes=model.out_features
-        ).to(dtype=torch.float32)
+    classes = stable_unique(y_np)
+    if model.binary and len(classes) != 2:
+        raise ValueError("Binary ADMTSK requires exactly two classes.")
+    if model.out_features != len(classes):
+        raise ValueError(
+            f"out_features={model.out_features} but training has "
+            f"{len(classes)} classes."
+        )
+    if model.out_features < 2:
+        raise ValueError(
+            "ADMTSK paper path requires out_features >= 2 (one column per class)."
+        )
+    class_to_index = {label_key(c): i for i, c in enumerate(classes.tolist())}
+    try:
+        encoded = np.asarray(
+            [class_to_index[label_key(v)] for v in y_np], dtype=np.int64
+        )
+    except KeyError as exc:
+        raise ValueError(f"Unknown training label: {exc}") from exc
+    y_target = F.one_hot(
+        torch.as_tensor(encoded), num_classes=model.out_features
+    ).to(dtype=torch.float32)
 
     model._classes = np.asarray(classes)
     if device is not None:
@@ -799,12 +830,9 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
 
     Prediction
     ----------
-    * ``out_features == 1``: sigmoid → threshold 0.5; proba columns [1-p, p]
-    * ``out_features >= 2``: softmax / argmax (paper-faithful multiclass
-      and two-output binary)
-
-    Softmax probabilities on MSE-trained scores are uncalibrated
-    compatibility scores.
+    Always one column per class (binary uses two outputs). Argmax maps to
+    original labels. ``predict_proba`` returns softmax compatibility scores
+    on MSE-trained logits (not calibrated probabilities).
     """
 
     def __init__(
@@ -839,7 +867,14 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
         batch_fraction: float = 0.2,
         epochs: int = 50,
         random_state: int = 0,
+        device=None,
+        verbose: bool = False,
+        **kwargs,
     ):
+        del verbose, kwargs
+        if device is not None:
+            self.device = device
+            self.model = self.model.to(self.device)
         train_admtsk_model(
             self.model,
             X,
@@ -854,6 +889,10 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
         self.is_fitted_ = True
         return self
 
+    def admtsk_paper_fit(self, X, y, **kwargs):
+        """Evaluator ``fit_method`` alias for :meth:`fit`."""
+        return self.fit(X, y, **kwargs)
+
     def _iter_batches(self, X: Tensor):
         n = X.shape[0]
         bs = max(1, self.batch_size)
@@ -867,12 +906,10 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
                 (0, self.model.out_features),
                 dtype=self.dtype,
             )
-
-        pin_memory = (
-            torch.device(self.device).type == "cuda"
-            if not isinstance(self.device, torch.device)
-            else self.device.type == "cuda"
-        )
+        model_param = next(self.model.parameters())
+        model_device = model_param.device
+        model_dtype = model_param.dtype
+        pin_memory = model_device.type == "cuda"
         was_training = self.model.training
         self.model.eval()
         chunks: List[Tensor] = []
@@ -880,8 +917,8 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
             with torch.no_grad():
                 for xb in self._iter_batches(X_t):
                     xb = xb.to(
-                        device=self.device,
-                        dtype=self.dtype,
+                        device=model_device,
+                        dtype=model_dtype,
                         non_blocking=pin_memory,
                     )
                     chunks.append(self.model(xb)[0].detach().cpu())
@@ -890,48 +927,39 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
                 self.model.train()
         return torch.cat(chunks, dim=0)
 
+    def _check_fitted(self):
+        if not bool(getattr(self, "is_fitted_", False)) or getattr(
+            self.model, "_classes", None
+        ) is None:
+            raise NotFittedError(
+                "This SklearnADMTSKWrapper instance is not fitted yet. "
+                "Call fit() before predict()."
+            )
+
     def predict(self, X):
+        self._check_fitted()
         logits = self._forward_logits(X)
-        classes = getattr(self.model, "_classes", None)
+        classes = np.asarray(self.model._classes)
         if logits.shape[0] == 0:
-            if classes is not None:
-                return np.empty((0,), dtype=np.asarray(classes).dtype)
-            return np.empty((0,), dtype=np.int64)
-
-        if self.model.out_features == 1:
-            proba = torch.sigmoid(logits).squeeze(-1)
-            pred = (proba >= 0.5).to(torch.long).cpu().numpy()
-        else:
-            pred = logits.argmax(dim=1).cpu().numpy()
-
-        if classes is not None and len(classes) == self.model.out_features:
-            return np.asarray(classes)[pred]
-        if classes is not None and self.model.out_features == 1 and len(classes) == 2:
-            return np.asarray(classes)[pred]
-        return pred
+            return np.empty((0,), dtype=classes.dtype)
+        pred = logits.argmax(dim=1).cpu().numpy()
+        return classes[pred]
 
     def predict_proba(self, X):
+        self._check_fitted()
         logits = self._forward_logits(X)
         if logits.shape[0] == 0:
-            n_cols = 2 if self.model.out_features == 1 else self.model.out_features
-            return np.empty((0, n_cols), dtype=np.float32)
-
-        if self.model.out_features == 1:
-            p = torch.sigmoid(logits)
-            if p.ndim == 1:
-                p = p.unsqueeze(1)
-            proba = torch.cat([1.0 - p, p], dim=1)
-        else:
-            proba = torch.softmax(logits, dim=1)
+            return np.empty((0, self.model.out_features), dtype=np.float32)
+        # Softmax compatibility scores (MSE-trained; not calibrated).
+        proba = torch.softmax(logits, dim=1)
         return proba.detach().cpu().numpy()
 
     def decision_function(self, X):
-        logits = self._forward_logits(X).detach().cpu().numpy()
-        if logits.shape[1] == 1:
-            return logits.ravel()
-        return logits
+        self._check_fitted()
+        return self._forward_logits(X).detach().cpu().numpy()
 
     def score(self, X, y):
+        self._check_fitted()
         return accuracy_score(np.asarray(y).reshape(-1), self.predict(X))
 
     def _convert_to_tensor(self, data):
@@ -952,6 +980,16 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
             "batch_size": self.batch_size,
         }
 
+    def _sync_fitted_from_model(self) -> None:
+        if getattr(self.model, "is_fitted_", False) and getattr(
+            self.model, "_classes", None
+        ) is not None:
+            self.classes_ = np.asarray(self.model._classes)
+            self.is_fitted_ = True
+        else:
+            self.classes_ = None
+            self.is_fitted_ = False
+
     def set_params(self, **parameters):
         for key, value in parameters.items():
             if key not in {"model", "device", "dtype", "batch_size"}:
@@ -962,6 +1000,7 @@ class SklearnADMTSKWrapper(BaseEstimator, ClassifierMixin):
                     raise ValueError(f"batch_size must be >= 1, got {value}")
             setattr(self, key, value)
         self.model = self.model.to(device=self.device, dtype=self.dtype)
+        self._sync_fitted_from_model()
         return self
 
 
