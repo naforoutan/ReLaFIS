@@ -285,11 +285,17 @@ class Evaluator:
             loss_mode: "default" | "paper_mse"
             uses_reconstruction: True
             scheduler: "onecycle" | "none"
+            trainer: "generic" | "custom_fit"
+            fit_method: optional wrapper method name (e.g. "unfis_gqlm")
+            fit_params: dict passed to the custom fit method
         """
         training_config = dict(training_config or {})
         loss_mode = training_config.get("loss_mode", "default")
         uses_reconstruction = training_config.get("uses_reconstruction", True)
         scheduler_name = training_config.get("scheduler", "onecycle")
+        trainer = training_config.get("trainer", "generic")
+        fit_method = training_config.get("fit_method", None)
+        fit_params = dict(training_config.get("fit_params", {}) or {})
 
         self._refresh_split(session_id=run_seed, fold_index=fold_index)
 
@@ -301,7 +307,125 @@ class Evaluator:
         # Add noise to data
         X_train_noisy = self._apply_noise(self.X_train, noise_std, self.noise_type)
         X_test_noisy = self._apply_noise(self.X_test, noise_std, self.noise_type)
-        
+
+        # ------------------------------------------------------------------
+        # Custom-fit path (e.g. UNFIS GqLM): no Adam / OneCycle / recon /
+        # generic early stopping. Fresh model per fold; fit on train only.
+        # ------------------------------------------------------------------
+        if trainer == "custom_fit":
+            import inspect
+
+            try:
+                model = model_class(**run_params, dtype=torch.float32)
+            except TypeError:
+                model = model_class(**run_params)
+            model = model.to(self.device)
+            wrapper = wrapper_class(model)
+
+            call_kwargs = dict(fit_params)
+            call_kwargs.setdefault("device", self.device)
+            call_kwargs.setdefault("random_state", run_seed)
+            call_kwargs.setdefault("verbose", False)
+
+            target = (
+                getattr(wrapper, fit_method)
+                if fit_method is not None and hasattr(wrapper, fit_method)
+                else wrapper.fit
+            )
+            try:
+                sig = inspect.signature(target)
+                if any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                ):
+                    filtered = call_kwargs
+                else:
+                    filtered = {
+                        k: v for k, v in call_kwargs.items() if k in sig.parameters
+                    }
+            except (TypeError, ValueError):
+                filtered = call_kwargs
+
+            # Single fit on the current training fold only (no Adam / OneCycle / recon).
+            target(X_train_noisy, self.y_train, **filtered)
+
+            if hasattr(model, "linguistic_richness"):
+                try:
+                    linguistic_richness = model.linguistic_richness()
+                except Exception as e:
+                    print(f"Warning: Could not compute linguistic_richness - {e}")
+                    linguistic_richness = np.nan
+            else:
+                linguistic_richness = np.nan
+
+            if hasattr(model, "relaxation_rate"):
+                try:
+                    relaxation_rate, relaxation_rate_per_rule = model.relaxation_rate(
+                        per_rule=True
+                    )
+                    relaxation_rate_per_rule = (
+                        relaxation_rate_per_rule.detach().cpu().numpy()
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not compute relaxation_rate - {e}")
+                    relaxation_rate, relaxation_rate_per_rule = np.nan, None
+            else:
+                relaxation_rate, relaxation_rate_per_rule = np.nan, None
+            wrapper.relaxation_rate_per_rule = relaxation_rate_per_rule
+
+            try:
+                y_train_pred = wrapper.predict(X_train_noisy)
+                y_test_pred = wrapper.predict(X_test_noisy)
+                train_acc = accuracy_score(self.y_train, y_train_pred)
+                test_acc = accuracy_score(self.y_test, y_test_pred)
+                try:
+                    train_proba = wrapper.predict_proba(X_train_noisy)
+                    test_proba = wrapper.predict_proba(X_test_noisy)
+                    if self.binary:
+                        if train_proba.ndim == 1 or (
+                            train_proba.ndim == 2 and train_proba.shape[1] == 1
+                        ):
+                            pos = train_proba.ravel()
+                            train_proba = np.stack([1 - pos, pos], axis=1)
+                        if test_proba.ndim == 1 or (
+                            test_proba.ndim == 2 and test_proba.shape[1] == 1
+                        ):
+                            pos = test_proba.ravel()
+                            test_proba = np.stack([1 - pos, pos], axis=1)
+                        train_auc = roc_auc_score(self.y_train, train_proba[:, 1])
+                        test_auc = roc_auc_score(self.y_test, test_proba[:, 1])
+                    else:
+                        all_classes = np.unique(
+                            np.concatenate([self.y_train, self.y_test])
+                        )
+                        train_auc = self._safe_multiclass_auc(
+                            self.y_train, train_proba, all_classes
+                        )
+                        test_auc = self._safe_multiclass_auc(
+                            self.y_test, test_proba, all_classes
+                        )
+                except Exception as e:
+                    print(f"Warning: Could not compute AUC - {e}")
+                    train_auc, test_auc = np.nan, np.nan
+            except Exception as e:
+                print(f"Error during evaluation: {e}")
+                train_acc, test_acc, train_auc, test_auc = (
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                    np.nan,
+                )
+
+            return (
+                train_acc,
+                test_acc,
+                train_auc,
+                test_auc,
+                linguistic_richness,
+                relaxation_rate,
+                wrapper,
+            )
+
         # Create data loaders
         if self.binary:
             y_train_tensor = torch.tensor(self.y_train, dtype=torch.float32)
