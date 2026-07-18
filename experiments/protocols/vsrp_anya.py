@@ -95,7 +95,7 @@ def select_compression_ratio(
     X_train = np.asarray(X_train, dtype=np.float64)
     y_train = np.asarray(y_train).reshape(-1)
     classes = np.unique(y_train)
-    n_out = 1 if binary else int(len(classes))
+    n_out = 2 if binary else int(len(classes))
     if binary and len(classes) != 2:
         raise ValueError("Binary selection needs exactly two classes.")
 
@@ -133,6 +133,7 @@ def select_compression_ratio(
                     "proj_dim": None,
                     "seed": int(random_state) + 1000 * k + fold_i,
                     "p_init": 500.0,
+                    "projection_mode": "paper_dynamic",
                 }
             )
             model = model_factory(**params, dtype=torch.float32).to(device)
@@ -201,7 +202,7 @@ def run_vsrp_single_split(
     Xtr = apply_optional_noise(Xtr, noise_std, apply_noise)
     Xte = apply_optional_noise(Xte, noise_std, apply_noise)
 
-    n_out = 1 if binary else int(len(np.unique(y_train)))
+    n_out = 2 if binary else int(len(np.unique(y_train)))
     params = dict(model_params or {})
     params.update(
         {
@@ -215,6 +216,7 @@ def run_vsrp_single_split(
             "proj_dim": None,
             "seed": int(seed),
             "p_init": float(params.get("p_init", 500.0)),
+            "projection_mode": params.get("projection_mode", "paper_dynamic"),
         }
     )
 
@@ -255,6 +257,9 @@ def run_vsrp_single_split(
         "scaler": type(scaler).__name__,
         "feature_range": (-1.0, 1.0),
         "compression_factor": selected_k,
+        "compression_ratio": selected_k,
+        "projection_mode": str(getattr(model, "projection_mode", "paper_dynamic")),
+        "evolved_rule_count": final_rules,
         "projected_dimension": int(model.proj_dim),
         "extended_input_dimension": int(model.d_ext),
         "grid_validation_scores": candidate_scores,
@@ -268,7 +273,7 @@ def run_vsrp_single_split(
         "test_time_frozen": True,
         "seed": int(seed),
         "adaptations": [
-            "binary one-output {-1,+1} classification interface",
+            "one output column per class (binary uses two outputs + one-hot + argmax)",
             "sklearn probability-like compatibility scores",
             "train-only preprocessing and hyperparameter selection",
         ],
@@ -297,7 +302,7 @@ def run_vsrp_stratified_cv(
     device=None,
     seed: int = 0,
     dataset_profile: str = "standard",
-    mode: str = "selected",  # "selected" (B) or "per_candidate" (A)
+    mode: str = "leakage_safe_selection_mode",  # or paper_table_mode
     config: Optional[Dict[str, Any]] = None,
 ) -> ProtocolRunResult:
     """Stratified K-fold paper protocol for VSRP-AnYa-EFS."""
@@ -319,7 +324,7 @@ def run_vsrp_stratified_cv(
         n_splits=n_splits, shuffle=True, random_state=int(seed)
     )
 
-    if mode == "per_candidate":
+    if mode in ("per_candidate", "paper_table_mode"):
         # Mode A: one mean±std per k (store nested results).
         per_k: Dict[int, List[float]] = {int(k): [] for k in candidates}
         fold_metadata: List[Dict[str, Any]] = []
@@ -391,6 +396,12 @@ def run_vsrp_stratified_cv(
             },
         )
 
+    if mode not in ("selected", "leakage_safe_selection_mode"):
+        raise ValueError(
+            f"Unknown mode {mode!r}; expected paper_table_mode / "
+            "leakage_safe_selection_mode (or legacy per_candidate / selected)."
+        )
+
     # Mode B: select k on outer-train, evaluate once on outer-test.
     fold_scores: List[float] = []
     fold_metadata = []
@@ -456,7 +467,7 @@ def run_vsrp_stratified_cv(
             "n_outer_scores": len(fold_scores),
             "fold_metadata": fold_metadata,
             "adaptations": [
-                "binary one-output {-1,+1} classification interface",
+                "one output column per class (binary uses two outputs + one-hot + argmax)",
                 "sklearn probability-like compatibility scores",
                 "train-only preprocessing and hyperparameter selection",
             ],
@@ -501,7 +512,7 @@ def run_vsrp_anya_protocol(
             device=device,
             seed=seed,
             dataset_profile=str(cfg.get("dataset_profile", "standard")),
-            mode=str(cfg.get("cv_mode", "selected")),
+            mode=str(cfg.get("cv_mode", "leakage_safe_selection_mode")),
             config=cfg,
         )
 

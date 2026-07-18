@@ -9,7 +9,6 @@ import numpy as np
 from experiments.protocols.admtsk import run_admtsk_protocol
 from experiments.protocols.anfis import run_anfis_protocol
 from experiments.protocols.common import ProtocolRunResult
-from experiments.protocols.efnn_nulluni import run_efnn_nulluni_protocol
 from experiments.protocols.generic import run_generic_protocol
 from experiments.protocols.unfis import run_unfis_protocol
 from experiments.protocols.vsrp_anya import run_vsrp_anya_protocol
@@ -67,6 +66,8 @@ def run_model_experiment(
     )
 
     if protocol_id == PROTOCOL_EFNN_NULLUNI:
+        from experiments.protocols.efnn_nulluni import run_efnn_nulluni_protocol
+
         return run_efnn_nulluni_protocol(**common)
 
     if protocol_id == PROTOCOL_VSRP_ANYA:

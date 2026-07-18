@@ -34,3 +34,16 @@ def stable_unique(y: np.ndarray) -> np.ndarray:
         seen.add(key)
         ordered.append(v)
     return np.asarray(ordered, dtype=object if any(isinstance(v, str) for v in ordered) else None)
+
+
+def validate_declared_classes(classes) -> np.ndarray:
+    """Validate a complete ``classes=`` schema (no duplicates, non-empty)."""
+    if classes is None:
+        raise ValueError("classes= must not be None.")
+    arr = np.asarray(classes).reshape(-1)
+    if arr.size < 1:
+        raise ValueError("classes= must declare at least one class.")
+    keys = [label_key(v) for v in arr.tolist()]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"classes= contains duplicate labels: {keys!r}")
+    return arr

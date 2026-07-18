@@ -347,7 +347,30 @@ class Evaluator:
                 filtered = call_kwargs
 
             # Single fit on the current training fold only (no Adam / OneCycle / recon).
+            import time as _time
+
+            _t0 = _time.perf_counter()
             target(X_train_noisy, self.y_train, **filtered)
+            _train_time = float(_time.perf_counter() - _t0)
+
+            # Protocol metadata for online / paper-protocol models (e.g. VSRP-AnYa-EFS).
+            if getattr(model, "uses_vsrp_anya_protocol", False):
+                wrapper.vsrp_protocol_metadata_ = {
+                    "training_time_sec": _train_time,
+                    "evolved_rule_count": int(getattr(model, "rules_count", 0)),
+                    "projected_dimension": int(getattr(model, "proj_dim", -1)),
+                    "compression_ratio": int(getattr(model, "compression_ratio", -1)),
+                    "random_seed": int(run_seed),
+                    "fold_index": fold_index,
+                    "projection_mode": str(
+                        getattr(model, "projection_mode", "paper_dynamic")
+                    ),
+                    "preprocessing": getattr(
+                        model, "required_input_scaling", "minmax_m1_1"
+                    ),
+                    "linguistic_richness": float("nan"),
+                    "relaxation_rate": float("nan"),
+                }
 
             if hasattr(model, "linguistic_richness"):
                 try:
