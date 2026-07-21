@@ -174,32 +174,36 @@ class ORL(Test):
 
 
 class Isolet(Test):
-    """ISOLET dataset from local ARFF file.
+    """ISOLET spoken-letter recognition fetched live from UCI (id=54).
 
-    617 features, 26 classes, one line per example.
+    7797 samples, 617 features, 26 classes (letters A–Z).
+    Falls back to OpenML ('isolet') if the UCI API is unreachable.
+
+    Requires: pip install ucimlrepo (and an internet connection).
     """
 
     def __init__(self, *args, **kwargs) -> None:
-        data, meta = arff.loadarff("./data/Isolet.arff")
-        df = pd.DataFrame(data)
-
-        # Convert bytes to native Python strings for all object columns
-        for col in df.columns:
-            if df[col].dtype == object:
-                df[col] = df[col].apply(
-                    lambda x: x.decode() if isinstance(x, bytes) else x
-                )
-
-        self.df = df.iloc[:, :-1]
-        self.target = df.iloc[:, -1]
-
-        # Convert quoted numeric class labels like '1'..'26' to integers
         try:
-            self.target = self.target.astype(int)
-        except (ValueError, TypeError):
-            pass
+            from ucimlrepo import fetch_ucirepo
 
-        print(f"✅ Isolet loaded: {self.df.shape[0]} samples, {self.df.shape[1]} features, {self.target.nunique()} classes")
+            data = fetch_ucirepo(id=54)
+            self.df = data.data.features.copy()
+            self.target = data.data.targets.iloc[:, 0]
+        except Exception:
+            from sklearn.datasets import fetch_openml
+
+            data = fetch_openml("isolet", version=1, as_frame=True, parser="auto")
+            self.df = data.data.copy()
+            self.target = data.target
+
+        self.df.columns = self.df.columns.astype(str)
+        self.target = pd.to_numeric(self.target, errors="raise").astype(int)
+        self.target.name = "class"
+
+        print(
+            f"✅ Isolet loaded: {self.df.shape[0]} samples, "
+            f"{self.df.shape[1]} features, {self.target.nunique()} classes"
+        )
 
         super().__init__(*args, **kwargs)
 
