@@ -4,7 +4,7 @@ Shared linguistic-richness utility.
 Why this exists
 ----------------
 Each model class previously computed `linguistic_richness()` against its
-*own* category count (LitAnfis: 2, GIFTSHIFTER/GIFTSHIFT: 4), and external
+*own* category count (LitAnfis: 2, GIFT: 4), and external
 reporting code (evaluate.py) normalised by each model's own ceiling
 log(N_categories) to get a 0-100% reading. That percentage is NOT
 comparable across models: 100% for a 2-category model (cap log(2)) and
@@ -26,7 +26,7 @@ point: it shows up as a real, absolute richness gap rather than being
 hidden by each model getting graded on its own curve.
 
 Because every model is scored on the same support, the raw nats value
-H in [0, log(4)] is now directly comparable: a GIFTSHIFTER rule with
+H in [0, log(4)] is now directly comparable: a GIFT rule with
 H=0.96 is unambiguously richer than a LitAnfis rule with H=0.62 — no
 "% of own max" caveat needed anymore.
 """

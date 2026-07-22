@@ -1,4 +1,4 @@
-"""Verbalise learned GIFTSHIFTER antecedents as human-readable rules."""
+"""Verbalise learned GIFT antecedents as human-readable rules."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def _unwrap_model(model):
     if hasattr(model, "model"):
         return model.model
     raise ValueError(
-        "Expected a GIFTSHIFTER-family nn.Module (with .literal/.temp/"
+        "Expected a GIFT-family nn.Module (with .literal/.temp/"
         ".comb_weight) or an sklearn wrapper exposing .model"
     )
 
@@ -128,7 +128,7 @@ def verbalize_rules(
     threshold_w: float = 0.65,
     relaxation_threshold: float = 0.8,
 ) -> Tuple[str, str]:
-    """Verbalise learned GIFTSHIFTER antecedents.
+    """Verbalise learned GIFT antecedents.
 
     For each rule ``i`` and feature ``j`` the function reads the post-sigmoid
     branch weights ``w1 = sigmoid(literal)``, ``w2 = sigmoid(temp)``,
@@ -148,7 +148,7 @@ def verbalize_rules(
     Parameters
     ----------
     model:
-        A trained :class:`model.giftshifter.GIFTSHIFTER` (or sklearn wrapper).
+        A trained :class:`model.GIFT.GIFT` (or sklearn wrapper).
     feature_names:
         Names for input features, indexed by feature position.
     class_names:

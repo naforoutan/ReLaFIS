@@ -45,7 +45,7 @@ def _sigmoid_np(x: np.ndarray) -> np.ndarray:
 
 
 def _extract_gift_mf_params(model: nn.Module) -> dict:
-    """Pull GIFTSHIFTER / GIFTSHIFT antecedent parameters onto NumPy."""
+    """Pull GIFT antecedent parameters onto NumPy."""
     mean = model.mean.detach().cpu().numpy()
     sigma = _softplus_np(model.std.detach().cpu().numpy())
     sigma = np.maximum(sigma, 1e-3)
@@ -127,7 +127,7 @@ def plot_gift_mfs(
     num_points=500,
     save_path=None,
 ):
-    """Publication grid of class histograms + final effective GIFTSHIFTER MFs.
+    """Publication grid of class histograms + final effective GIFT MFs.
 
     Layout mirrors LitANFIS Fig. 9: for each selected feature, a top panel
     shows the class-wise feature distribution and a bottom panel shows the
@@ -137,7 +137,7 @@ def plot_gift_mfs(
     Parameters
     ----------
     model :
-        ``GIFTSHIFTER`` / ``GIFTSHIFT`` module or its sklearn wrapper.
+        ``GIFT`` module or its sklearn wrapper.
     X :
         Feature matrix in **model input space**.
     y :

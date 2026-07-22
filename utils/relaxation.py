@@ -1,4 +1,4 @@
-"""Relaxation heatmap for GIFTSHIFTER-family neuro-fuzzy models.
+"""Relaxation heatmap for GIFT-family neuro-fuzzy models.
 
 Unlike a decision boundary, the per-feature/per-rule consequent relaxation
 coefficient ``r_{i,j}`` has no 2D limitation: it is a full ``rules x features``
@@ -77,7 +77,7 @@ def _unwrap_model(model):
     if hasattr(model, "model"):
         return model.model
     raise ValueError(
-        "Expected a GIFTSHIFTER-family nn.Module (with .literal/.temp/"
+        "Expected a GIFT-family nn.Module (with .literal/.temp/"
         ".comb_weight) or an sklearn wrapper exposing .model"
     )
 

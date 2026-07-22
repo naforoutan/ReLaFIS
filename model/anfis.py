@@ -57,7 +57,7 @@ class ANFIS(nn.Module):
         mean = self.mean.view(1, *self.mean.shape)
         # Clamp std away from 0: it's unconstrained and used as sigma**2 in
         # the denominator below, so it can drift and blow up the gradient
-        # into NaN (same failure mode fixed in GIFTSHIFTER / LitAnfis / UNFIS).
+        # into NaN (same failure mode fixed in GIFT / LitAnfis / UNFIS).
         std = self.std.clamp(min=1e-3).view(1, *self.std.shape)
 
         X = X.view(*X.shape, 1)
@@ -73,7 +73,7 @@ class ANFIS(nn.Module):
 
         max_log_y= torch.max(y, dim=1, keepdim=True)[0]
 
-        # FIX (same issue as GIFTSHIFTER / LitAnfis / GIFTSHIFT): firing
+        # FIX (same issue as GIFT / LitAnfis / GIFTSHIFT): firing
         # strength was the PRODUCT of per-feature memberships (sum in
         # log-space) over dim=1 = in_features. For high-dimensional data
         # (e.g. 617 features on Isolet), multiplying hundreds of numbers in

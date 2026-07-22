@@ -23,7 +23,7 @@ ROSE_NAVY_SEQUENCE = [
     "#2E2148",
 ]
 
-HIGHLIGHT_MODEL_KEY = "giftshifter"
+HIGHLIGHT_MODEL_KEY = "gift"
 
 
 def rose_navy_cmap() -> LinearSegmentedColormap:
@@ -54,7 +54,8 @@ ELEGANT_SEQUENCE = [
 ]
 
 MODEL_COLORS: Dict[str, str] = {
-    "giftshifter": ELEGANT["accent"],
+    "gift": ELEGANT["accent"],
+    "giftshifter": ELEGANT["accent"],  # alias
     "giftshift": ELEGANT["warm_orange"],
     "giftshiftentropy": "#E9C46A",
     "litanfis": ELEGANT["deep_blue"],

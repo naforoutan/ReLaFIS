@@ -74,7 +74,7 @@ class LitAnfis(nn.Module):
         mean = self.mean.view(1, *self.mean.shape)
         # Clamp away from 0 (and negative): std is unconstrained and used as
         # sigma**2 in the denominator below, so it can blow up the gradient
-        # into NaN (same failure mode fixed in GIFTSHIFTER).
+        # into NaN (same failure mode fixed in GIFT).
         std = self.std.clamp(min=1e-3).view(1, *self.std.shape)
 
         X = X.view(*X.shape, 1)
@@ -90,7 +90,7 @@ class LitAnfis(nn.Module):
         epsilon = 1e-10
         y = torch.log(y + epsilon)
 
-        # FIX (same issue as GIFTSHIFTER): firing strength was the PRODUCT
+        # FIX (same issue as GIFT): firing strength was the PRODUCT
         # of per-feature memberships (sum in log-space) over dim=1 =
         # in_features. For high-dimensional data (e.g. 617 features on
         # Isolet), multiplying hundreds of numbers in (0, 1] makes every
@@ -125,7 +125,7 @@ class LitAnfis(nn.Module):
         """
         Linguistic-richness metric (LitAnfis variant) — ABSOLUTE scale.
 
-        Unlike GIFTSHIFTER, LitAnfis's antecedent has only the Gaussian
+        Unlike GIFT, LitAnfis's antecedent has only the Gaussian
         branch (`mean`, `std`, `literal`) — there is no relational
         (greater-than / less-than) branch and no β mixing coefficient.
 
@@ -145,7 +145,7 @@ class LitAnfis(nn.Module):
         it is a real, absolute consequence of the architecture, and it is
         exactly what makes the resulting number comparable across models:
         a LitAnfis rule can score at most log(2) ≈ 0.693 on this shared
-        log(4) ≈ 1.386 scale, while a GIFTSHIFTER/GIFTSHIFT rule that
+        log(4) ≈ 1.386 scale, while a GIFT/GIFTSHIFT rule that
         actually spreads across all 4 categories can score up to log(4).
         That gap IS the richness gap — no per-model renormalization needed.
 
@@ -183,13 +183,13 @@ class LitAnfis(nn.Module):
         LitAnfis's only antecedent gate is `literal` (alpha = sigmoid
         (literal)), which is a RELATIONAL equal/not-equal gate — it
         picks which of two relations a term expresses, exactly like
-        the relational branch of GIFTSHIFTER. It has no separate
+        the relational branch of GIFT. It has no separate
         "don't care" / relaxation gate (no ζ-style term that blends
         membership toward a uniform value the way UNFIS's `s` or
         GRIFFIN's `s` do). So every rule's relaxation rate is
         structurally exactly 0.0 for this architecture, reported here
         (not NaN) so it's directly comparable on the same absolute
-        scale against UNFIS / GRIFFIN / GIFTSHIFTER.
+        scale against UNFIS / GRIFFIN / GIFT.
 
         Returns
         -------
@@ -225,7 +225,7 @@ class LitAnfis(nn.Module):
                 "linguistic_richness_per_rule_std": linguistic_richness_per_rule.std().item(),
                 # Always 0.0 for LitAnfis — see relaxation_rate() docstring.
                 # Reported here for direct comparison against
-                # UNFIS/GRIFFIN/GIFTSHIFTER on the same absolute scale.
+                # UNFIS/GRIFFIN/GIFT on the same absolute scale.
                 "relaxation_rate": relaxation_rate_mean,
                 "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
                 "relaxation_rate_per_rule_std": relaxation_rate_per_rule.std().item(),

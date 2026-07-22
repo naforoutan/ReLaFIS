@@ -73,7 +73,7 @@ class GRIFFIN(nn.Module):
         # Clamp std away from 0 (and negative): it's used as a raw divisor
         # below and is otherwise unconstrained during training, so it can
         # drift toward 0 and blow up the gradient into NaN (same failure
-        # mode fixed in GIFTSHIFTER / LitAnfis / UNFIS / ANFIS).
+        # mode fixed in GIFT / LitAnfis / UNFIS / ANFIS).
         std = self.std.clamp(min=1e-3)
         y = torch.exp(-0.5 * torch.pow(Z / std, exponent=2)) # member function
 
