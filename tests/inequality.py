@@ -1,7 +1,7 @@
 """
 Synthetic differential inequality datasets.
 
-GIFTSHIFT vs LitANFIS benchmark — inequality classification tasks.
+ReLaFIS vs LitANFIS benchmark — inequality classification tasks.
 
 These datasets are generated programmatically (no local files / network
 access required). Labels are derived directly from a closed-form inequality
@@ -167,7 +167,7 @@ class PDE(Test):
 
     Discretised PDE inequality. The diffusivity parameter alpha acts as a
     scaling factor on the spatial term, creating a region boundary that
-    shifts with alpha. This is the key stress test for GIFTSHIFT's
+    shifts with alpha. This is the key stress test for ReLaFIS's
     comb_weight: near-equilibrium zones are Gaussian-like, far-from-
     equilibrium zones are sigmoid-like.
 

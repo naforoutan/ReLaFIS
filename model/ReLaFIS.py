@@ -1,428 +1,340 @@
-"""ReLaFIS: Relational Linguistic Fuzzy Inference System.
-
-Neuro-fuzzy classifier with relational antecedents and TSK (or Mamdani) consequents.
-"""
-
-from __future__ import annotations
-
-import math
-import warnings
-
-import numpy as np
-import pandas as pd
 import torch
+from torch import nn
+import numpy as np
 import torch.nn.functional as F
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.metrics import accuracy_score
-from torch import nn
-
-__all__ = [
-    "ReLaFIS",
-    "MamdaniReLaFIS",
-    "SklearnReLaFISWrapper",
-]
+import pandas as pd
 
 
 class ReLaFIS(nn.Module):
-    """Complete ReLaFIS neuro-fuzzy classifier (relational antecedents + TSK)."""
 
-    N_LINGUISTIC_CATEGORIES = 4
-
-    def __init__(
-        self,
-        in_features: int,
-        rules: int,
-        out_features: int,
-        binary: bool,
-        drop_out_p: float = 0.0,
-        device=None,
-        dtype=None,
-    ):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
         super().__init__()
-        factory_kwargs = {"device": device, "dtype": dtype}
+        factory_kwargs = {'device': device, 'dtype': dtype}
 
         self.rules_count = rules
         self.in_features = in_features
         self.out_features = out_features
+
         self.binary = binary
-        self.device = device
-        self.dtype = dtype
 
         if binary:
             self.out_features = out_features = 1
 
-        if drop_out_p != 0.0:
-            warnings.warn(
-                "drop_out_p is deprecated and ignored; activation dropout "
-                "is not applied to rule firing strengths.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
         self.drop_out_p = drop_out_p
 
-        self.mean = nn.Parameter(torch.rand((in_features, rules), **factory_kwargs))
-        self.std = nn.Parameter(torch.rand((in_features, rules), **factory_kwargs))
-        self.literal = nn.Parameter(
-            torch.randn((in_features, rules), **factory_kwargs) * 0.1
-        )
-        self.temp = nn.Parameter(
-            torch.randn((in_features, rules), **factory_kwargs) * 0.1
-        )
-        self.comb_weight = nn.Parameter(
-            torch.randn((in_features, rules), **factory_kwargs) * 0.1
-        )
+        self.device = device
 
-        self.local_slopes = nn.Parameter(
-            torch.randn((rules, in_features, out_features), **factory_kwargs) * 0.01
-        )
-        self.local_biases = nn.Parameter(
-            torch.zeros((rules, out_features), **factory_kwargs)
-        )
+        self.mean = nn.Parameter(torch.rand(
+            (in_features, rules), **factory_kwargs))
+        self.std = nn.Parameter(torch.rand(
+            (in_features, rules), **factory_kwargs))
+        self.literal = nn.Parameter(torch.randn(
+            (in_features, rules), **factory_kwargs) * 0.1)
+
+        self.local_slopes = nn.Parameter(torch.randn((rules, in_features, out_features), **factory_kwargs) * 0.01)
+        self.local_biases = nn.Parameter(torch.zeros((rules, out_features), **factory_kwargs))
 
         self.decoder_linear = nn.Linear(
-            in_features=rules,
-            out_features=in_features,
-            bias=True,
-            **factory_kwargs,
-        )
+            in_features=rules, out_features=in_features, bias=True, **factory_kwargs)
 
-    @staticmethod
-    def _normalized_binary_entropy(weight: torch.Tensor) -> torch.Tensor:
-        """Full Bernoulli entropy normalized by log(2), in [0, 1]."""
-        eps = torch.finfo(weight.dtype).eps
-        safe_weight = weight.clamp(eps, 1.0 - eps)
-        entropy = -(
-            safe_weight * torch.log(safe_weight)
-            + (1.0 - safe_weight) * torch.log(1.0 - safe_weight)
-        )
-        return entropy / math.log(2.0)
+        self.sigmoid = nn.Sigmoid()
+        self.drop_out = nn.Dropout(p=drop_out_p)
 
-    def _compute_relational_state(self, X: torch.Tensor) -> dict:
-        """Centralized antecedent / firing mathematics for ReLaFIS."""
-        # X: [batch, features] -> [batch, features, 1]
-        X_expanded = X.unsqueeze(-1)
+        self.sigmoid_slope = nn.Parameter(torch.ones(
+            (in_features, rules), **factory_kwargs))
+        self.temp = nn.Parameter(torch.randn(
+            (in_features, rules), **factory_kwargs) * 0.1)
+        self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1) 
+        
 
-        mean = self.mean.unsqueeze(0)  # [1, features, rules]
-        sigma = F.softplus(self.std).clamp_min(1e-3)  # [features, rules]
-        sigma_b = sigma.unsqueeze(0)  # [1, features, rules]
+    def forward(self, X):
+        y = self.encode(X)
+        entropy = - y * torch.log(y + 1e-10)
 
-        w1 = torch.sigmoid(self.literal)  # [features, rules]
-        w2 = torch.sigmoid(self.temp)
-        w3 = torch.sigmoid(self.comb_weight)
+        if self.rules_count > 1:
+            y = F.normalize(y, p=1, dim=1)
 
-        w1_b = w1.unsqueeze(0)
-        w2_b = w2.unsqueeze(0)
-        w3_b = w3.unsqueeze(0)
+        y = self.drop_out(y)
 
-        r_equal = torch.exp(
-            -((X_expanded - mean) ** 2) / (2.0 * sigma_b ** 2)
-        )
-        r_not_equal = 1.0 - r_equal
+        reconstructed_X = self.decoder_linear(y)
 
-        z = (X_expanded - mean) / (math.sqrt(2.0) * sigma_b)
-        r_at_least = 0.5 * (1.0 + torch.erf(z))
-        r_at_most = 1.0 - r_at_least
+        y = self.tsk(X, y)
 
-        identity_relation = w1_b * r_equal + (1.0 - w1_b) * r_not_equal
-        ordering_relation = w2_b * r_at_least + (1.0 - w2_b) * r_at_most
-        gamma = w3_b * identity_relation + (1.0 - w3_b) * ordering_relation
+        return y, reconstructed_X, entropy
 
-        H1 = self._normalized_binary_entropy(w1)
-        H2 = self._normalized_binary_entropy(w2)
-        rho = w3 * H1 + (1.0 - w3) * H2  # [features, rules]
+    def encode(self, X):
+        mean = self.mean.view(1, *self.mean.shape)
 
-        gamma_relaxed = rho.unsqueeze(0) + (1.0 - rho.unsqueeze(0)) * gamma
+        std = F.softplus(self.std).clamp(min=1e-3).view(1, *self.std.shape)
+        
+        X = X.view(*X.shape, 1)
 
-        eps = torch.finfo(X.dtype).eps
-        log_firing = torch.log(gamma_relaxed.clamp_min(eps)).sum(dim=1)
-        phi = torch.softmax(log_firing, dim=1)
+        def gaussmf(x, mu, sigma):
+            return torch.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
 
-        return {
-            "sigma": sigma,
-            "w1": w1,
-            "w2": w2,
-            "w3": w3,
-            "H1": H1,
-            "H2": H2,
-            "rho": rho,
-            "r_equal": r_equal,
-            "r_not_equal": r_not_equal,
-            "r_at_least": r_at_least,
-            "r_at_most": r_at_most,
-            "gamma": gamma,
-            "gamma_relaxed": gamma_relaxed,
-            "log_firing": log_firing,
-            "phi": phi,
-        }
+        # Gaussian membership with negation
+        mu_pos = gaussmf(X, mean, std)
+        literal = self.sigmoid(self.literal)
+        mu_pos_neg = (mu_pos * literal) + (1 - mu_pos) * (1 - literal)
 
-    def encode(self, X: torch.Tensor) -> torch.Tensor:
-        """Return normalized rule firing strengths φ."""
-        return self._compute_relational_state(X)["phi"]
+        # Sigmoidal "greater than mu" with negation
+        def sigmoidmf(x, mu, slope):
+            return self.sigmoid((x - mu) * slope)
+        
+        mu_greater = sigmoidmf(X, mean, self.sigmoid_slope)
+        temp = self.sigmoid(self.temp)
+        mu_great_less = (mu_greater * temp) + (1 - mu_greater) * (1 - temp)
 
-    def tsk(
-        self,
-        X: torch.Tensor,
-        phi: torch.Tensor,
-        rho: torch.Tensor,
-        sigma: torch.Tensor,
-    ) -> torch.Tensor:
-        """Rule-centered, width-normalized, relaxation-gated TSK consequent."""
-        local_coordinates = (
-            X.unsqueeze(1) - self.mean.T.unsqueeze(0)
-        ) / sigma.T.unsqueeze(0)
 
-        consequent_gate = (1.0 - rho).T
-        gated_coordinates = local_coordinates * consequent_gate.unsqueeze(0)
+        weight = torch.sigmoid(self.comb_weight)            # (in_features, rules)
+        weight = weight.unsqueeze(0)                        # (1, in_features, rules)
+        mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
-        rule_outputs = torch.einsum(
-            "brf,rfo->bro",
-            gated_coordinates,
-            self.local_slopes,
-        )
-        rule_outputs = rule_outputs + self.local_biases.unsqueeze(0)
+        
+        epsilon = 1e-10
+        y = torch.log(mu + epsilon)
 
-        logits = torch.einsum("br,bro->bo", phi, rule_outputs)
-        return logits
+        max_log_y = torch.max(y, dim=1, keepdim=True)[0]
 
-    def forward(self, X: torch.Tensor):
-        state = self._compute_relational_state(X)
-        phi = state["phi"]
-        reconstructed_X = self.decoder_linear(phi)
-        logits = self.tsk(
-            X=X,
-            phi=phi,
-            rho=state["rho"],
-            sigma=state["sigma"],
-        )
-        return logits, reconstructed_X
+        y = torch.mean(y - max_log_y, dim=1)
 
-    def linguistic_richness(self, per_rule: bool = False):
-        """Absolute relational entropy (ARE) over hard-assigned categories.
+        y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
+        
+        return y
 
-        Categories (per feature-rule):
-            0: equal, 1: not-equal, 2: at-least, 3: at-most
+    def tsk(self, X, y):
         """
-        with torch.no_grad():
-            w1 = torch.sigmoid(self.literal)
-            w2 = torch.sigmoid(self.temp)
-            w3 = torch.sigmoid(self.comb_weight)
+        Beta-weighted Entropy-Relaxed TSK consequent.
 
-            # Hierarchical hard assignment
-            identity_branch = w3 >= 0.5
-            equal = identity_branch & (w1 >= 0.5)
-            not_equal = identity_branch & (w1 < 0.5)
-            at_least = (~identity_branch) & (w2 >= 0.5)
-            at_most = (~identity_branch) & (w2 < 0.5)
+        Architecture
+        ────────────
 
-            category = torch.zeros_like(w1, dtype=torch.long)
-            category = torch.where(equal, torch.zeros_like(category), category)
-            category = torch.where(not_equal, torch.ones_like(category), category)
-            category = torch.where(
-                at_least, torch.full_like(category, 2), category
-            )
-            category = torch.where(
-                at_most, torch.full_like(category, 3), category
-            )
+            α₁ = sigmoid(literal)      participation weight of the Gaussian
+                                       (equality) branch and its negation
+            α₂ = sigmoid(temp)         participation weight of the Less-than /
+                                       Greater-than (sigmoidal) branch
 
-            n_features = self.in_features
-            per_rule_H = []
-            for rule_idx in range(self.rules_count):
-                cats = category[:, rule_idx]
-                counts = torch.bincount(cats, minlength=self.N_LINGUISTIC_CATEGORIES)
-                probs = counts.float() / float(n_features)
-                positive = probs > 0
-                H_rule = -(
-                    probs[positive] * torch.log(probs[positive])
-                ).sum()
-                per_rule_H.append(H_rule)
+            β  = sigmoid(comb_weight)  mixing coefficient used in encode():
+                                           μ = β·μ_pos_neg + (1-β)·μ_great_less
+                                       β plays the same role here: it weights
+                                       the two entropy contributions.
 
-            per_rule_are = torch.stack(per_rule_H)
-            mean_are = per_rule_are.mean().item()
+        Entropy terms  (one-sided: measures how "committed" each α is)
+        ──────────────────────────────────────────────────────────────
+            H₁ = -α₁ · log(α₁)        ∈ [0, 1/e]  max at α=1/e ≈ 0.368
+            H₂ = -α₂ · log(α₂)        ∈ [0, 1/e]
 
-        if per_rule:
-            return mean_are, per_rule_are
-        return mean_are
 
-    def relaxation_rate(self, per_rule: bool = False):
-        """Mean semantic relaxation ρ from the shared entropy definition."""
-        with torch.no_grad():
-            w1 = torch.sigmoid(self.literal)
-            w2 = torch.sigmoid(self.temp)
-            w3 = torch.sigmoid(self.comb_weight)
-            H1 = self._normalized_binary_entropy(w1)
-            H2 = self._normalized_binary_entropy(w2)
-            rho = w3 * H1 + (1.0 - w3) * H2
+        Per-feature, per-rule relaxation
+        ─────────────────────────────────
+            r_{i,j} = β · H₁_{i,j} + (1-β) · H₂_{i,j}
 
-            per_rule_rate = rho.mean(dim=0)
-            mean_rate = per_rule_rate.mean().item()
 
-        if per_rule:
-            return mean_rate, per_rule_rate
-        return mean_rate
+        TSK output
+        ──────────
+            y_i = Σ_j [ (1 - r_{i,j}) · a_{i,j} · (x_j - m_{i,j}) / φ_{i,j} ] + b_i
+
+        where φ_{i,j} = softplus(std) > 0 is the fuzziness scale.
+
+        Shapes
+        ──────
+            X      : [B, F]
+            y      : [B, R]   (normalised firing strengths from encode)
+            output : [B, O]
+        """
+        eps = 1e-10
+
+        X64      = X.double()
+        means64  = self.mean.double() 
+
+        phi64    = F.softplus(self.std).clamp(min=1e-3).double()
+        slopes64 = self.local_slopes.double()
+        biases64 = self.local_biases.double()
+        y64      = y.double()
+
+        alpha1 = torch.sigmoid(self.literal).double()       # Gaussian branch weight
+        alpha2 = torch.sigmoid(self.temp).double()          # Sigmoidal branch weight
+        beta   = torch.sigmoid(self.comb_weight).double()   # mixing coefficient
+
+        # one-sided entropy  H_k = -α_k · log(α_k)
+        # Normalise by 1/e (the maximum of -α·log(α) on (0,1]) so r ∈ [0,1]
+        one_over_e = torch.tensor(1.0 / torch.e, dtype=torch.float64, device=X.device)
+
+        H1 = -(alpha1 * torch.log(alpha1 + eps)) / one_over_e
+        H2 = -(alpha2 * torch.log(alpha2 + eps)) / one_over_e
+
+        # relaxation term  r_{i,j} = β·H₁ + (1-β)·H₂  ∈ [0, 1]
+        r = beta * H1 + (1.0 - beta) * H2 
+
+        # gate: (1 - r), reshaped for broadcasting
+        gate = (1.0 - r)
+        gate = gate.T.unsqueeze(-1)
+
+        phi_rs = phi64.T.unsqueeze(-1)
+
+        # relaxed & scaled slopes: a_{i,j} · (1 - r_{i,j}) / φ_{i,j}
+        slopes_relaxed = gate * slopes64 / (phi_rs + eps)
+
+        # shifted inputs: (x_j - m_{i,j}) 
+        X_exp     = X64.unsqueeze(1).unsqueeze(3)
+        means_exp = means64.T.unsqueeze(0).unsqueeze(3)
+        shifted   = X_exp - means_exp
+
+        # linear combination over features
+        slopes_exp   = slopes_relaxed.unsqueeze(0)
+        linear_terms = torch.matmul(
+            shifted.transpose(-2, -1), slopes_exp
+        ).squeeze(-2)
+
+        # add bias
+        rule_outputs = linear_terms + biases64.unsqueeze(0)
+
+        y64_r  = y64.reshape(-1, self.rules_count, 1)
+        result = (rule_outputs * y64_r).sum(dim=1)
+
+        return result.to(X.dtype)
 
     def get_interpretable_params(self):
         with torch.no_grad():
-            w1 = torch.sigmoid(self.literal)
-            w2 = torch.sigmoid(self.temp)
-            w3 = torch.sigmoid(self.comb_weight)
-            H1 = self._normalized_binary_entropy(w1)
-            H2 = self._normalized_binary_entropy(w2)
-            rho = w3 * H1 + (1.0 - w3) * H2
-            sigma = F.softplus(self.std).clamp_min(1e-3)
+            literal = torch.sigmoid(self.literal)   # α₁
+            temp    = torch.sigmoid(self.temp)       # α₂
+            beta    = torch.sigmoid(self.comb_weight)  # β
 
-            linguistic_richness_mean, linguistic_richness_per_rule = (
-                self.linguistic_richness(per_rule=True)
-            )
-            relaxation_rate_mean, relaxation_rate_per_rule = (
-                self.relaxation_rate(per_rule=True)
-            )
-
-            def _std(t: torch.Tensor) -> float:
-                return t.std(unbiased=False).item()
+            eps = 1e-10
+            one_over_e = 1.0 / torch.e
+            H1 = -(literal * torch.log(literal + eps)) / one_over_e 
+            H2 = -(temp    * torch.log(temp    + eps)) / one_over_e 
+            r  = beta * H1 + (1.0 - beta) * H2 
 
             stats = {
-                "linguistic_richness": linguistic_richness_mean,
-                "linguistic_richness_per_rule_std": _std(
-                    linguistic_richness_per_rule
-                ),
-                "relaxation_rate": relaxation_rate_mean,
-                "relaxation_rate_per_rule": relaxation_rate_per_rule.cpu().numpy(),
-                "relaxation_rate_per_rule_std": _std(relaxation_rate_per_rule),
-                "rho_mean": rho.mean().item(),
-                "rho_std": _std(rho),
-                "rho_min": rho.min().item(),
-                "rho_max": rho.max().item(),
-                "sigma_mean": sigma.mean().item(),
-                "sigma_std": _std(sigma),
-                "sigma_min": sigma.min().item(),
-                "sigma_max": sigma.max().item(),
-                "w1_mean": w1.mean().item(),
-                "w1_std": _std(w1),
-                "w2_mean": w2.mean().item(),
-                "w2_std": _std(w2),
-                "w3_mean": w3.mean().item(),
-                "w3_std": _std(w3),
-                "slope_mean": self.local_slopes.mean().item(),
-                "slope_std": _std(self.local_slopes),
-                "bias_mean": self.local_biases.mean().item(),
-                "bias_std": _std(self.local_biases),
+                # α₁ - Gaussian branch participation
+                "alpha1_mean": literal.mean().item(),
+                "alpha1_std":  literal.std().item(),
+                "alpha1_saturation": ((literal < 0.1) | (literal > 0.9)).float().mean().item(),
+                # α₂ - Sigmoidal branch participation
+                "alpha2_mean": temp.mean().item(),
+                "alpha2_std":  temp.std().item(),
+                "alpha2_saturation": ((temp < 0.1) | (temp > 0.9)).float().mean().item(),
+                # β - mixing / weighting coefficient
+                "beta_mean": beta.mean().item(),
+                "beta_std":  beta.std().item(),
+                "beta_saturation": ((beta < 0.1) | (beta > 0.9)).float().mean().item(),
+                # Relaxation r_{i,j} diagnostics
+                "relaxation_mean": r.mean().item(),
+                "relaxation_std":  r.std().item(),
+                "relaxation_high": (r > 0.8).float().mean().item(),  # heavily relaxed features
+                "relaxation_low":  (r < 0.2).float().mean().item(),  # fully active features
+                # Consequent parameter diagnostics
+                "slope_mean":  self.local_slopes.mean().item(),
+                "slope_std":   self.local_slopes.std().item(),
+                "bias_mean":   self.local_biases.mean().item(),
                 "center_mean": self.mean.mean().item(),
-                "center_std": _std(self.mean),
+                "phi_mean":    F.softplus(self.std).clamp(min=1e-3).mean().item(),
+                "phi_std":     F.softplus(self.std).clamp(min=1e-3).std().item(),
             }
         return stats
 
 
 class MamdaniReLaFIS(ReLaFIS):
-    """Mamdani-style consequent on shared ReLaFIS antecedents."""
-
-    def __init__(
-        self,
-        in_features: int,
-        rules: int,
-        out_features: int,
-        binary: bool,
-        drop_out_p: float = 0.0,
-        device=None,
-        dtype=None,
-    ):
-        super().__init__(
-            in_features, rules, out_features, binary, drop_out_p, device, dtype
-        )
-        factory_kwargs = {"device": device, "dtype": dtype}
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, 
+                 drop_out_p=0.5, device=None, dtype=None):
+        super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
+    
+        factory_kwargs = {'device': device, 'dtype': dtype}
         if binary:
-            out_features = 1
-        self.mamdani_linear = nn.Linear(
-            self.rules_count, out_features, bias=True, **factory_kwargs
-        )
+            self.out_features = out_features = 1
+        self.mamdani_linear = nn.Linear(rules, out_features, bias=True, **factory_kwargs)
 
-    def forward(self, X: torch.Tensor):
-        state = self._compute_relational_state(X)
-        phi = state["phi"]
-        reconstructed_X = self.decoder_linear(phi)
-        logits = self.mamdani_linear(phi)
-        return logits, reconstructed_X
+    def mamdani(self, y):
+        return self.mamdani_linear(y)
+    
+    def forward(self, X):
+        y = self.encode(X)
+        entropy = - y * torch.log(y + 1e-10)
+
+        if self.rules_count > 1:
+            y = F.normalize(y, p=1, dim=1)
+
+        reconstructed_X = self.decoder_linear(y)
+
+        y = self.mamdani(y)
+
+        return y, reconstructed_X, entropy
 
 
 class SklearnReLaFISWrapper(BaseEstimator, ClassifierMixin):
-    """Scikit-learn compatible wrapper around a trained ReLaFIS model."""
-
+    """
+    Scikit-learn wrapper for ReLaFIS model
+    """
     def __init__(self, model, device=None, dtype=torch.float32):
-        self.device = device if device is not None else "cpu"
+        self.device = device if device else 'cpu'
         self.dtype = dtype
         self.model = model.to(self.device)
 
     def fit(self, X, y):
-        self._check_is_fitted()
         return self
 
     def predict(self, X):
-        self._check_is_fitted()
+        self._check_is_filiteraled()
         X = self._convert_to_tensor(X)
-        self.model.eval()
 
         with torch.no_grad():
-            logits = self.model(X)[0]
+            y_pred = self.model(X)[0]
 
         if self.model.binary:
-            predictions = (torch.sigmoid(logits).squeeze(-1) >= 0.5)
-            return predictions.cpu().numpy()
-
-        predictions = torch.softmax(logits, dim=1).argmax(dim=1)
-        return predictions.cpu().numpy()
+            y_pred = torch.sigmoid(y_pred)
+            y_pred = y_pred.cpu().numpy() > 0.5
+        else:
+            y_pred = torch.softmax(y_pred, dim=1)
+            y_pred = y_pred.argmax(dim=1).cpu().numpy()
+        return y_pred
 
     def predict_proba(self, X):
-        self._check_is_fitted()
+        self._check_is_filiteraled()
         X = self._convert_to_tensor(X)
-        self.model.eval()
 
         with torch.no_grad():
-            logits = self.model(X)[0]
-
+            y_pred = self.model(X)[0]
+        
         if self.model.binary:
-            pos = torch.sigmoid(logits)
-            if pos.ndim == 1:
-                pos = pos.unsqueeze(-1)
-            neg = 1.0 - pos
-            probs = torch.cat([neg, pos], dim=1)
+            y_pred = torch.sigmoid(y_pred)
+            # Convert to (n_samples, 2) format
+            neg_proba = 1 - y_pred
+            y_pred = torch.cat([neg_proba, y_pred], dim=1)
         else:
-            probs = torch.softmax(logits, dim=1)
-
-        return probs.cpu().numpy()
+            y_pred = torch.softmax(y_pred, dim=1)
+    
+        return y_pred.cpu().numpy()
 
     def score(self, X, y):
         y_pred = self.predict(X)
         return accuracy_score(y, y_pred)
 
     def _convert_to_tensor(self, data):
+        """ Helper function to convert numpy arrays to torch tensors and move to the correct device. """
         if isinstance(data, np.ndarray):
-            data = torch.tensor(data, dtype=self.dtype, device=self.device)
+            data = torch.tensor(data, dtype=torch.float32, device=self.device)
+
         elif isinstance(data, torch.Tensor):
-            data = data.to(device=self.device, dtype=self.dtype)
+            data = data.to(self.device)
+
         elif isinstance(data, pd.DataFrame):
             data = torch.tensor(
-                data.values, dtype=self.dtype, device=self.device
-            )
+                data.values, dtype=torch.float32, device=self.device)
         else:
             raise ValueError(
-                "Input data must be a NumPy array, pandas DataFrame, "
-                "or a PyTorch tensor."
-            )
+                "Input data must be a NumPy array or a PyTorch tensor.")
         return data
 
-    def _check_is_fitted(self):
-        if self.model is None:
-            raise RuntimeError("Wrapper has no model; call with a trained model.")
+    def _check_is_filiteraled(self):
+        pass
 
     def get_params(self, deep=True):
         return {
-            "model": self.model,
-            "device": self.device,
-            "dtype": self.dtype,
+            'model': self.model
         }
 
     def set_params(self, **parameters):
-        for key, value in parameters.items():
-            setattr(self, key, value)
-        if "model" in parameters and self.model is not None:
-            self.model = self.model.to(self.device)
         return self

@@ -1,7 +1,7 @@
 """
 Real-world UCI benchmark datasets (binarised for classification).
 
-GIFTSHIFT vs LitANFIS benchmark — these are originally regression datasets
+ReLaFIS vs LitANFIS benchmark — these are originally regression datasets
 from the UCI Machine Learning Repository, fetched live via `ucimlrepo`.
 Regression targets are binarised using the thresholds documented in the
 benchmark reference (see each class docstring) to create classification
