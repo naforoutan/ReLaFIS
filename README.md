@@ -1,20 +1,20 @@
-# GIFT
+# ReLaFIS
 
-PyTorch implementation of **GIFT**, a neuro-fuzzy classifier with dual-branch antecedents (Gaussian equality and sigmoidal relational terms), soft combination weights, and entropy-aware consequent relaxation.
+PyTorch implementation of **ReLaFIS** (Relational Linguistic Fuzzy Inference System), a neuro-fuzzy classifier with dual-branch relational antecedents (equality and ordering), soft combination weights, and entropy-aware consequent relaxation.
 
 ## Features
 
-- Dual-branch antecedents: equal / not-equal and greater / less
+- Dual-branch antecedents: equal / not-equal and at-least / at-most
 - Final effective membership via a learned mix of both branches
 - TSK consequents with per-feature relaxation
-- Linguistic richness (Shannon entropy over relation categories, nats)
+- Absolute relational entropy (ARE) over relation categories
 - scikit-learn-compatible wrapper for training and evaluation
 - Tabular / biomedical / UCI dataset loaders with holdout or stratified k-fold splits
 
 ## Repository layout
 
 ```
-model/GIFT.py          # GIFT, MamdaniGIFT, SklearnGIFTWrapper
+model/ReLaFIS.py       # ReLaFIS, MamdaniReLaFIS, SklearnReLaFISWrapper
 tests/                 # Dataset / experiment base classes
 train/                 # Early stopping and training helpers
 notebooks/test_class.ipynb
@@ -24,16 +24,15 @@ notebooks/test_class.ipynb
 
 ```python
 import torch
-from model.GIFT import GIFT, SklearnGIFTWrapper
+from model.ReLaFIS import ReLaFIS, SklearnReLaFISWrapper
 
-model = GIFT(
+model = ReLaFIS(
     in_features=X.shape[1],
     rules=3,
     out_features=1,      # binary
     binary=True,
-    drop_out_p=0.3,
 )
-wrapper = SklearnGIFTWrapper(model, device="cuda" if torch.cuda.is_available() else "cpu")
+wrapper = SklearnReLaFISWrapper(model, device="cuda" if torch.cuda.is_available() else "cpu")
 wrapper.fit(X_train, y_train)   # or train with your own loop
 y_pred = wrapper.predict(X_test)
 ```
@@ -44,8 +43,8 @@ Interactive experiments and dataset setup live in `notebooks/test_class.ipynb`.
 
 | Metric | Meaning |
 |--------|---------|
-| **Linguistic richness** | Mean Shannon entropy of hard-assigned relation categories per rule; range \([0,\ \ln 4]\) nats |
-| **Relaxation rate** | Mean consequent gate \(r \in [0,1]\); higher ⇒ more “don’t care” attenuation |
+| **ARE (linguistic richness)** | Mean Shannon entropy of hard-assigned relation categories per rule; range \([0,\ \ln 4]\) nats |
+| **Relaxation rate** | Mean semantic relaxation \(\rho \in [0,1]\); higher ⇒ more “don’t care” attenuation |
 
 ## Requirements
 
@@ -55,4 +54,4 @@ Interactive experiments and dataset setup live in `notebooks/test_class.ipynb`.
 
 ## Citation
 
-If you use this code, please cite the associated GIFT / ReLaFIS paper (update with the final venue reference when available).
+If you use this code, please cite the associated ReLaFIS paper (update with the final venue reference when available).
