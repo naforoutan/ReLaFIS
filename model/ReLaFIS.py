@@ -40,69 +40,58 @@ class ReLaFIS(nn.Module):
             in_features=rules, out_features=in_features, bias=True, **factory_kwargs)
 
         self.sigmoid = nn.Sigmoid()
+        # Kept for constructor compatibility; not applied to phi (paper has no phi dropout).
         self.drop_out = nn.Dropout(p=drop_out_p)
 
-        self.sigmoid_slope = nn.Parameter(torch.ones(
-            (in_features, rules), **factory_kwargs))
         self.temp = nn.Parameter(torch.randn(
             (in_features, rules), **factory_kwargs) * 0.1)
-        self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1) 
-        
+        self.comb_weight = nn.Parameter(torch.randn((in_features, rules), **factory_kwargs) * 0.1)
+
+    @staticmethod
+    def _binary_shannon_entropy(weight: torch.Tensor) -> torch.Tensor:
+        """Full Bernoulli Shannon entropy in nats: H(w) = -w log w - (1-w) log(1-w)."""
+        eps = 1e-10
+        safe_weight = weight.clamp(eps, 1.0 - eps)
+        return -(
+            safe_weight * torch.log(safe_weight)
+            + (1.0 - safe_weight) * torch.log(1.0 - safe_weight)
+        )
 
     def forward(self, X):
-        y = self.encode(X)
-        entropy = - y * torch.log(y + 1e-10)
-
-        if self.rules_count > 1:
-            y = F.normalize(y, p=1, dim=1)
-
-        y = self.drop_out(y)
-
-        reconstructed_X = self.decoder_linear(y)
-
-        y = self.tsk(X, y)
-
-        return y, reconstructed_X, entropy
+        phi = self.encode(X)
+        reconstructed_X = self.decoder_linear(phi)
+        logits = self.tsk(X, phi)
+        return logits, reconstructed_X
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
 
-        std = F.softplus(self.std).clamp(min=1e-3).view(1, *self.std.shape)
-        
+        sigma = F.softplus(self.std).clamp_min(1e-3).view(1, *self.std.shape)
+
         X = X.view(*X.shape, 1)
 
-        def gaussmf(x, mu, sigma):
-            return torch.exp(-((x - mu) ** 2) / (2 * sigma ** 2))
+        def gaussmf(x, mu, sigma_):
+            return torch.exp(-((x - mu) ** 2) / (2 * sigma_ ** 2))
 
-        # Gaussian membership with negation
-        mu_pos = gaussmf(X, mean, std)
+        # Gaussian membership with negation (equality / inequality)
+        mu_pos = gaussmf(X, mean, sigma)
         literal = self.sigmoid(self.literal)
         mu_pos_neg = (mu_pos * literal) + (1 - mu_pos) * (1 - literal)
 
-        # Sigmoidal "greater than mu" with negation
-        def sigmoidmf(x, mu, slope):
-            return self.sigmoid((x - mu) * slope)
-        
-        mu_greater = sigmoidmf(X, mean, self.sigmoid_slope)
+        # Sigmoidal at-least / at-most using the same positive sigma
+        mu_greater = torch.sigmoid((X - mean) * sigma)
         temp = self.sigmoid(self.temp)
         mu_great_less = (mu_greater * temp) + (1 - mu_greater) * (1 - temp)
-
 
         weight = torch.sigmoid(self.comb_weight)            # (in_features, rules)
         weight = weight.unsqueeze(0)                        # (1, in_features, rules)
         mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
-        
-        epsilon = 1e-10
-        y = torch.log(mu + epsilon)
-
-        max_log_y = torch.max(y, dim=1, keepdim=True)[0]
-
-        y = torch.mean(y - max_log_y, dim=1)
-
-        y = torch.exp(y) * torch.exp(max_log_y.squeeze(dim=1))
-        
-        return y
+        # Product T-norm in log-space, then normalize across rules
+        eps = 1e-10
+        log_firing = torch.log(mu.clamp_min(eps)).sum(dim=1)
+        phi = torch.softmax(log_firing, dim=1)
+        return phi
 
     def tsk(self, X, y):
         """
@@ -113,30 +102,30 @@ class ReLaFIS(nn.Module):
 
             α₁ = sigmoid(literal)      participation weight of the Gaussian
                                        (equality) branch and its negation
-            α₂ = sigmoid(temp)         participation weight of the Less-than /
-                                       Greater-than (sigmoidal) branch
+            α₂ = sigmoid(temp)         participation weight of the at-least /
+                                       at-most (sigmoidal) branch
 
             β  = sigmoid(comb_weight)  mixing coefficient used in encode():
                                            μ = β·μ_pos_neg + (1-β)·μ_great_less
                                        β plays the same role here: it weights
                                        the two entropy contributions.
 
-        Entropy terms  (one-sided: measures how "committed" each α is)
-        ──────────────────────────────────────────────────────────────
-            H₁ = -α₁ · log(α₁)        ∈ [0, 1/e]  max at α=1/e ≈ 0.368
-            H₂ = -α₂ · log(α₂)        ∈ [0, 1/e]
+        Entropy terms  (full Bernoulli Shannon entropy, nats)
+        ─────────────────────────────────────────────────────
+            H₁ = -α₁ log α₁ - (1-α₁) log(1-α₁)
+            H₂ = -α₂ log α₂ - (1-α₂) log(1-α₂)
 
 
         Per-feature, per-rule relaxation
         ─────────────────────────────────
-            r_{i,j} = β · H₁_{i,j} + (1-β) · H₂_{i,j}
+            ρ_{i,j} = β · H₁_{i,j} + (1-β) · H₂_{i,j}
 
 
         TSK output
         ──────────
-            y_i = Σ_j [ (1 - r_{i,j}) · a_{i,j} · (x_j - m_{i,j}) / φ_{i,j} ] + b_i
+            y_i = Σ_j [ (1 - ρ_{i,j}) · a_{i,j} · (x_j - m_{i,j}) / σ_{i,j} ] + b_i
 
-        where φ_{i,j} = softplus(std) > 0 is the fuzziness scale.
+        where σ_{i,j} = softplus(std) > 0 is the shared width parameter.
 
         Shapes
         ──────
@@ -147,9 +136,9 @@ class ReLaFIS(nn.Module):
         eps = 1e-10
 
         X64      = X.double()
-        means64  = self.mean.double() 
+        means64  = self.mean.double()
 
-        phi64    = F.softplus(self.std).clamp(min=1e-3).double()
+        sigma64  = F.softplus(self.std).clamp_min(1e-3).double()
         slopes64 = self.local_slopes.double()
         biases64 = self.local_biases.double()
         y64      = y.double()
@@ -158,26 +147,22 @@ class ReLaFIS(nn.Module):
         alpha2 = torch.sigmoid(self.temp).double()          # Sigmoidal branch weight
         beta   = torch.sigmoid(self.comb_weight).double()   # mixing coefficient
 
-        # one-sided entropy  H_k = -α_k · log(α_k)
-        # Normalise by 1/e (the maximum of -α·log(α) on (0,1]) so r ∈ [0,1]
-        one_over_e = torch.tensor(1.0 / torch.e, dtype=torch.float64, device=X.device)
+        H1 = self._binary_shannon_entropy(alpha1)
+        H2 = self._binary_shannon_entropy(alpha2)
 
-        H1 = -(alpha1 * torch.log(alpha1 + eps)) / one_over_e
-        H2 = -(alpha2 * torch.log(alpha2 + eps)) / one_over_e
+        # relaxation term  ρ_{i,j} = β·H₁ + (1-β)·H₂
+        rho = beta * H1 + (1.0 - beta) * H2
 
-        # relaxation term  r_{i,j} = β·H₁ + (1-β)·H₂  ∈ [0, 1]
-        r = beta * H1 + (1.0 - beta) * H2 
-
-        # gate: (1 - r), reshaped for broadcasting
-        gate = (1.0 - r)
+        # gate: (1 - ρ), reshaped for broadcasting
+        gate = (1.0 - rho)
         gate = gate.T.unsqueeze(-1)
 
-        phi_rs = phi64.T.unsqueeze(-1)
+        sigma_rs = sigma64.T.unsqueeze(-1)
 
-        # relaxed & scaled slopes: a_{i,j} · (1 - r_{i,j}) / φ_{i,j}
-        slopes_relaxed = gate * slopes64 / (phi_rs + eps)
+        # relaxed & scaled slopes: a_{i,j} · (1 - ρ_{i,j}) / σ_{i,j}
+        slopes_relaxed = gate * slopes64 / (sigma_rs + eps)
 
-        # shifted inputs: (x_j - m_{i,j}) 
+        # shifted inputs: (x_j - m_{i,j})
         X_exp     = X64.unsqueeze(1).unsqueeze(3)
         means_exp = means64.T.unsqueeze(0).unsqueeze(3)
         shifted   = X_exp - means_exp
@@ -202,11 +187,9 @@ class ReLaFIS(nn.Module):
             temp    = torch.sigmoid(self.temp)       # α₂
             beta    = torch.sigmoid(self.comb_weight)  # β
 
-            eps = 1e-10
-            one_over_e = 1.0 / torch.e
-            H1 = -(literal * torch.log(literal + eps)) / one_over_e 
-            H2 = -(temp    * torch.log(temp    + eps)) / one_over_e 
-            r  = beta * H1 + (1.0 - beta) * H2 
+            H1 = self._binary_shannon_entropy(literal)
+            H2 = self._binary_shannon_entropy(temp)
+            rho = beta * H1 + (1.0 - beta) * H2
 
             stats = {
                 # α₁ - Gaussian branch participation
@@ -221,18 +204,18 @@ class ReLaFIS(nn.Module):
                 "beta_mean": beta.mean().item(),
                 "beta_std":  beta.std().item(),
                 "beta_saturation": ((beta < 0.1) | (beta > 0.9)).float().mean().item(),
-                # Relaxation r_{i,j} diagnostics
-                "relaxation_mean": r.mean().item(),
-                "relaxation_std":  r.std().item(),
-                "relaxation_high": (r > 0.8).float().mean().item(),  # heavily relaxed features
-                "relaxation_low":  (r < 0.2).float().mean().item(),  # fully active features
+                # Relaxation ρ_{i,j} diagnostics
+                "relaxation_mean": rho.mean().item(),
+                "relaxation_std":  rho.std().item(),
+                "relaxation_high": (rho > 0.8).float().mean().item(),  # heavily relaxed features
+                "relaxation_low":  (rho < 0.2).float().mean().item(),  # fully active features
                 # Consequent parameter diagnostics
                 "slope_mean":  self.local_slopes.mean().item(),
                 "slope_std":   self.local_slopes.std().item(),
                 "bias_mean":   self.local_biases.mean().item(),
                 "center_mean": self.mean.mean().item(),
-                "phi_mean":    F.softplus(self.std).clamp(min=1e-3).mean().item(),
-                "phi_std":     F.softplus(self.std).clamp(min=1e-3).std().item(),
+                "phi_mean":    F.softplus(self.std).clamp_min(1e-3).mean().item(),
+                "phi_std":     F.softplus(self.std).clamp_min(1e-3).std().item(),
             }
         return stats
 
@@ -251,17 +234,10 @@ class MamdaniReLaFIS(ReLaFIS):
         return self.mamdani_linear(y)
     
     def forward(self, X):
-        y = self.encode(X)
-        entropy = - y * torch.log(y + 1e-10)
-
-        if self.rules_count > 1:
-            y = F.normalize(y, p=1, dim=1)
-
-        reconstructed_X = self.decoder_linear(y)
-
-        y = self.mamdani(y)
-
-        return y, reconstructed_X, entropy
+        phi = self.encode(X)
+        reconstructed_X = self.decoder_linear(phi)
+        logits = self.mamdani(phi)
+        return logits, reconstructed_X
 
 
 class SklearnReLaFISWrapper(BaseEstimator, ClassifierMixin):
