@@ -1,2 +1,17 @@
 data/*logs.log
 *.log
+
+# Local agent and credential metadata
+.agents/
+.codex/
+.aws/
+
+# Generated Python and test caches
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Generated experiment artifacts
+results/
+revision/

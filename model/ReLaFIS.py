@@ -9,7 +9,8 @@ import pandas as pd
 
 class ReLaFIS(nn.Module):
 
-    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None):
+    def __init__(self, in_features: int, rules: int, out_features: int, binary: bool, drop_out_p=0.5, device=None, dtype=None,
+                 zeta1=1.0, zeta2=1.0, zeta3=1.0, aggregation="product"):
         super().__init__()
         factory_kwargs = {'device': device, 'dtype': dtype}
 
@@ -19,10 +20,15 @@ class ReLaFIS(nn.Module):
 
         self.binary = binary
 
-        if binary:
-            self.out_features = out_features = 1
-
         self.drop_out_p = drop_out_p
+        self.zeta1 = float(zeta1)
+        self.zeta2 = float(zeta2)
+        self.zeta3 = float(zeta3)
+        if aggregation == "min":
+            aggregation = "godel_min"
+        if aggregation not in {"product", "godel_min"}:
+            raise ValueError("aggregation must be 'product' or 'godel_min'")
+        self.aggregation = aggregation
 
         self.device = device
 
@@ -40,7 +46,6 @@ class ReLaFIS(nn.Module):
             in_features=rules, out_features=in_features, bias=True, **factory_kwargs)
 
         self.sigmoid = nn.Sigmoid()
-        # Kept for constructor compatibility; not applied to phi (paper has no phi dropout).
         self.drop_out = nn.Dropout(p=drop_out_p)
 
         self.temp = nn.Parameter(torch.randn(
@@ -59,9 +64,17 @@ class ReLaFIS(nn.Module):
 
     def forward(self, X):
         phi = self.encode(X)
-        reconstructed_X = self.decoder_linear(phi)
-        logits = self.tsk(X, phi)
+        phi_used = self.drop_out(phi)
+        reconstructed_X = self.decoder_linear(phi_used)
+        logits = self.tsk(X, phi_used)
         return logits, reconstructed_X
+
+    def _relation_weights(self):
+        return (
+            torch.sigmoid(self.zeta1 * self.literal),
+            torch.sigmoid(self.zeta2 * self.temp),
+            torch.sigmoid(self.zeta3 * self.comb_weight),
+        )
 
     def encode(self, X):
         mean = self.mean.view(1, *self.mean.shape)
@@ -75,22 +88,26 @@ class ReLaFIS(nn.Module):
 
         # Gaussian membership with negation (equality / inequality)
         mu_pos = gaussmf(X, mean, sigma)
-        literal = self.sigmoid(self.literal)
+        literal, temp, weight = self._relation_weights()
         mu_pos_neg = (mu_pos * literal) + (1 - mu_pos) * (1 - literal)
 
         # Sigmoidal at-least / at-most using the same positive sigma
         mu_greater = torch.sigmoid((X - mean) * sigma)
-        temp = self.sigmoid(self.temp)
         mu_great_less = (mu_greater * temp) + (1 - mu_greater) * (1 - temp)
 
-        weight = torch.sigmoid(self.comb_weight)            # (in_features, rules)
         weight = weight.unsqueeze(0)                        # (1, in_features, rules)
         mu = weight * mu_pos_neg + (1 - weight) * mu_great_less
 
-        # Product T-norm in log-space, then normalize across rules
-        eps = 1e-10
-        log_firing = torch.log(mu.clamp_min(eps)).sum(dim=1)
-        phi = torch.softmax(log_firing, dim=1)
+        if self.aggregation == "product":
+            # Product T-norm in log-space, then normalize across rules.
+            log_firing = torch.log(mu.clamp_min(1e-10)).sum(dim=1)
+            phi = torch.softmax(log_firing, dim=1)
+        else:
+            firing = mu.min(dim=1).values
+            total = firing.sum(dim=1, keepdim=True)
+            normalized = firing / total.clamp_min(1e-10)
+            uniform = torch.full_like(firing, 1.0 / self.rules_count)
+            phi = torch.where(total > 1e-10, normalized, uniform)
         return phi
 
     def tsk(self, X, y):
@@ -143,9 +160,7 @@ class ReLaFIS(nn.Module):
         biases64 = self.local_biases.double()
         y64      = y.double()
 
-        alpha1 = torch.sigmoid(self.literal).double()       # Gaussian branch weight
-        alpha2 = torch.sigmoid(self.temp).double()          # Sigmoidal branch weight
-        beta   = torch.sigmoid(self.comb_weight).double()   # mixing coefficient
+        alpha1, alpha2, beta = (weight.double() for weight in self._relation_weights())
 
         H1 = self._binary_shannon_entropy(alpha1)
         H2 = self._binary_shannon_entropy(alpha2)
@@ -181,11 +196,31 @@ class ReLaFIS(nn.Module):
 
         return result.to(X.dtype)
 
+    def antecedent_relation_entropy(self, per_rule=False):
+        """Entropy (nats) over the four dominant antecedent relation categories."""
+        from utils.linguistic_richness import categories_from_two_branch, richness_from_categories
+
+        with torch.no_grad():
+            w1, w2, w3 = self._relation_weights()
+            category = categories_from_two_branch(w1, w2, w3)
+            return richness_from_categories(
+                category, self.rules_count, self.in_features, per_rule=per_rule
+            )
+
+    def linguistic_richness(self, per_rule=False):
+        """Backward-compatible alias for antecedent relation entropy."""
+        return self.antecedent_relation_entropy(per_rule=per_rule)
+
+    def inference_parameter_count(self):
+        return sum(p.numel() for name, p in self.named_parameters()
+                   if p.requires_grad and not name.startswith("decoder_linear."))
+
+    def training_parameter_count(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+
     def get_interpretable_params(self):
         with torch.no_grad():
-            literal = torch.sigmoid(self.literal)   # α₁
-            temp    = torch.sigmoid(self.temp)       # α₂
-            beta    = torch.sigmoid(self.comb_weight)  # β
+            literal, temp, beta = self._relation_weights()
 
             H1 = self._binary_shannon_entropy(literal)
             H2 = self._binary_shannon_entropy(temp)
@@ -207,15 +242,18 @@ class ReLaFIS(nn.Module):
                 # Relaxation ρ_{i,j} diagnostics
                 "relaxation_mean": rho.mean().item(),
                 "relaxation_std":  rho.std().item(),
-                "relaxation_high": (rho > 0.8).float().mean().item(),  # heavily relaxed features
-                "relaxation_low":  (rho < 0.2).float().mean().item(),  # fully active features
+                "relaxation_high": (rho > 0.8 * np.log(2.0)).float().mean().item(),
+                "relaxation_low":  (rho < 0.2 * np.log(2.0)).float().mean().item(),
                 # Consequent parameter diagnostics
                 "slope_mean":  self.local_slopes.mean().item(),
                 "slope_std":   self.local_slopes.std().item(),
                 "bias_mean":   self.local_biases.mean().item(),
                 "center_mean": self.mean.mean().item(),
-                "phi_mean":    F.softplus(self.std).clamp_min(1e-3).mean().item(),
-                "phi_std":     F.softplus(self.std).clamp_min(1e-3).std().item(),
+                "sigma_mean": F.softplus(self.std).clamp_min(1e-3).mean().item(),
+                "sigma_std": F.softplus(self.std).clamp_min(1e-3).std().item(),
+                # Deprecated aliases retained for existing diagnostic scripts.
+                "phi_mean": F.softplus(self.std).clamp_min(1e-3).mean().item(),
+                "phi_std": F.softplus(self.std).clamp_min(1e-3).std().item(),
             }
         return stats
 
@@ -226,8 +264,6 @@ class MamdaniReLaFIS(ReLaFIS):
         super().__init__(in_features, rules, out_features, binary, drop_out_p, device, dtype)
     
         factory_kwargs = {'device': device, 'dtype': dtype}
-        if binary:
-            self.out_features = out_features = 1
         self.mamdani_linear = nn.Linear(rules, out_features, bias=True, **factory_kwargs)
 
     def mamdani(self, y):
@@ -235,8 +271,9 @@ class MamdaniReLaFIS(ReLaFIS):
     
     def forward(self, X):
         phi = self.encode(X)
-        reconstructed_X = self.decoder_linear(phi)
-        logits = self.mamdani(phi)
+        phi_used = self.drop_out(phi)
+        reconstructed_X = self.decoder_linear(phi_used)
+        logits = self.mamdani(phi_used)
         return logits, reconstructed_X
 
 
@@ -247,7 +284,7 @@ class SklearnReLaFISWrapper(BaseEstimator, ClassifierMixin):
     def __init__(self, model, device=None, dtype=torch.float32):
         self.device = device if device else 'cpu'
         self.dtype = dtype
-        self.model = model.to(self.device)
+        self.model = model.to(device=self.device, dtype=self.dtype)
 
     def fit(self, X, y):
         return self
@@ -255,32 +292,22 @@ class SklearnReLaFISWrapper(BaseEstimator, ClassifierMixin):
     def predict(self, X):
         self._check_is_filiteraled()
         X = self._convert_to_tensor(X)
+        self.model.eval()
 
         with torch.no_grad():
             y_pred = self.model(X)[0]
 
-        if self.model.binary:
-            y_pred = torch.sigmoid(y_pred)
-            y_pred = y_pred.cpu().numpy() > 0.5
-        else:
-            y_pred = torch.softmax(y_pred, dim=1)
-            y_pred = y_pred.argmax(dim=1).cpu().numpy()
-        return y_pred
+        return torch.softmax(y_pred, dim=1).argmax(dim=1).cpu().numpy()
 
     def predict_proba(self, X):
         self._check_is_filiteraled()
         X = self._convert_to_tensor(X)
+        self.model.eval()
 
         with torch.no_grad():
             y_pred = self.model(X)[0]
         
-        if self.model.binary:
-            y_pred = torch.sigmoid(y_pred)
-            # Convert to (n_samples, 2) format
-            neg_proba = 1 - y_pred
-            y_pred = torch.cat([neg_proba, y_pred], dim=1)
-        else:
-            y_pred = torch.softmax(y_pred, dim=1)
+        y_pred = torch.softmax(y_pred, dim=1)
     
         return y_pred.cpu().numpy()
 
@@ -291,14 +318,14 @@ class SklearnReLaFISWrapper(BaseEstimator, ClassifierMixin):
     def _convert_to_tensor(self, data):
         """ Helper function to convert numpy arrays to torch tensors and move to the correct device. """
         if isinstance(data, np.ndarray):
-            data = torch.tensor(data, dtype=torch.float32, device=self.device)
+            data = torch.tensor(data, dtype=self.dtype, device=self.device)
 
         elif isinstance(data, torch.Tensor):
-            data = data.to(self.device)
+            data = data.to(device=self.device, dtype=self.dtype)
 
         elif isinstance(data, pd.DataFrame):
             data = torch.tensor(
-                data.values, dtype=torch.float32, device=self.device)
+                data.values, dtype=self.dtype, device=self.device)
         else:
             raise ValueError(
                 "Input data must be a NumPy array or a PyTorch tensor.")
