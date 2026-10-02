@@ -115,23 +115,12 @@ The complete architecture is implemented as a differentiable PyTorch model and c
 
 ## Requirements
 
-The implementation is based on Python and PyTorch.
+The model implementation uses Python, PyTorch, NumPy, pandas, and scikit-learn. Dataset adapters and notebooks may also require PyCaret, SciPy, Matplotlib, Seaborn, and other packages listed in `requirements.txt`.
 
-Main dependencies include:
-
-```text
-torch
-numpy
-pandas
-scikit-learn
-scipy
-matplotlib
-```
-
-Install the project dependencies using:
+The checked-in `requirements.txt` is a pinned environment snapshot and includes packages beyond the model's core dependencies. Install it in a virtual environment when it matches your platform; otherwise, install the dependencies required for your workflow.
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 Using a virtual environment is recommended:
@@ -139,46 +128,64 @@ Using a virtual environment is recommended:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+## Repository layout
+
+```text
+model/       ReLaFIS and baseline model implementations
+notebooks/   Configurable classification example and training notebook
+tests/       Dataset adapters used by the examples and experiments
+train/       Training utilities and example training code
+utils/       Shared linguistic-richness and plotting helpers
+```
+
+The notebook currently selects a dataset and rule count through explicit configuration values. Its defaults are an example run; reproducing a paper experiment requires selecting the corresponding paper dataset and rule count.
 
 ---
 
 ## Basic Usage
 
-The main model is implemented as `ReLaFIS`.
+The main model is implemented in `model/ReLaFIS.py`. `out_features` is the number of classes for both binary and multiclass classification. Binary classification therefore uses two logits, and `binary` identifies the task without changing the output dimension.
 
-A minimal initialization example is:
+A minimal classification example is:
 
 ```python
-from model.relafis import ReLaFIS
+import torch
+from torch import nn
+from model.ReLaFIS import ReLaFIS
 
+num_classes = 3  # use 2 for binary classification
 model = ReLaFIS(
     in_features=num_features,
     rules=num_rules,
     out_features=num_classes,
-    binary=False,
+    binary=(num_classes == 2),
+    aggregation="product",  # default; "godel_min" is also supported
 )
+
+logits, reconstructed = model(X)  # X has shape [batch_size, num_features]
+classification_loss = nn.CrossEntropyLoss()(logits, targets.long())
+reconstruction_loss = (reconstructed - X).pow(2).sum(dim=1).mean()
+lambda_rec = 0.01  # example value; use the experiment's configured schedule
+loss = classification_loss + lambda_rec * reconstruction_loss
 ```
 
-For binary classification:
+For binary classification, set `num_classes = 2`; do not use a one-output sigmoid model. Predictions and probabilities are obtained from the class logits:
 
 ```python
-model = ReLaFIS(
-    in_features=num_features,
-    rules=num_rules,
-    out_features=1,
-    binary=True,
-)
+probabilities = torch.softmax(logits, dim=1)
+predictions = probabilities.argmax(dim=1)
 ```
 
-The implementation also provides utilities for inspecting the learned relational structure and evaluating the linguistic properties of the resulting fuzzy rules.
+The model returns `(logits, reconstructed_X)` in both training and evaluation modes. Call `model.train()` during optimization and `model.eval()` for inference; the latter disables rule-activation dropout. The implementation also provides methods for inspecting learned relational parameters, antecedent relation entropy, and parameter counts.
 
 ---
 
 ## Experiments
 
-The experimental evaluation considers several benchmark classification problems and compares ReLaFIS with conventional and recent neuro-fuzzy approaches.
+The paper's experimental evaluation considers benchmark classification problems and compares ReLaFIS with conventional and recent neuro-fuzzy approaches. This repository contains model implementations, dataset adapters, and a configurable notebook; it does not provide a single command that reruns every paper experiment.
 
 The experiments investigate:
 
@@ -191,7 +198,7 @@ The experiments investigate:
 - alternative rule aggregation mechanisms
 - behavior of learned relational predicates
 
-The repository also contains the implementations and evaluation utilities required to reproduce the reported experiments.
+The notebook's test set is evaluated after its predetermined training schedule. For paper reproduction, configure the dataset, rule count, seed protocol, and experiment-specific settings to match the relevant paper experiment.
 
 ---
 
