@@ -115,9 +115,7 @@ The complete architecture is implemented as a differentiable PyTorch model and c
 
 ## Requirements
 
-The model implementation uses Python, PyTorch, NumPy, pandas, and scikit-learn. Dataset adapters and notebooks may also require PyCaret, SciPy, Matplotlib, Seaborn, and other packages listed in `requirements.txt`.
-
-The checked-in `requirements.txt` is a pinned environment snapshot and includes packages beyond the model's core dependencies. Install it in a virtual environment when it matches your platform; otherwise, install the dependencies required for your workflow.
+The checked-in `requirements.txt` lists the project's direct model, dataset, plotting, and notebook dependencies. TensorFlow is optional and is only needed for the `FashionMNIST` dataset adapter. If you need a CPU-, CUDA-, or ROCm-specific PyTorch build, choose the matching install command from the [official PyTorch selector](https://pytorch.org/get-started/locally/) before installing the remaining requirements.
 
 ```bash
 python -m pip install -r requirements.txt
